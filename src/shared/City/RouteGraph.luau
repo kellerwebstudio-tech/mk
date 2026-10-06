@@ -741,7 +741,7 @@ function RouteGraph.validate(layout: any): { string }
 			local o = segs[j]
 			local sameRoad = s.road == o.road
 			if not (sameRoad and math.abs(s.i - o.i) == 1) then
-				if math.max(s.ax, s.bx) < math.min(o.ax, o.bx) - 1 or math.max(o.ax, o.bx) < sMinX - 1
+				if sMaxX < math.min(o.ax, o.bx) - 1 or math.max(o.ax, o.bx) < sMinX - 1
 					or sMaxZ < math.min(o.az, o.bz) - 1 or math.max(o.az, o.bz) < sMinZ - 1 then
 					-- bounding boxes apart
 				else
@@ -758,7 +758,6 @@ function RouteGraph.validate(layout: any): { string }
 							end
 						end
 					end
-					_ = sMaxX
 				end
 			end
 		end
@@ -767,7 +766,8 @@ function RouteGraph.validate(layout: any): { string }
 	-- 3. water: only bridge kinds may cross water rectangles
 	for _, w in ipairs(layout.water or {}) do
 		checkBounds("water", w.x, w.z)
-		local rect: Rect = { x0 = w.x - w.w / 2, z0 = w.z - w.d / 2, x1 = w.x + w.w / 2, z1 = w.z + w.d / 2 }
+		-- shrink the rectangle by 2 studs so ramps that end exactly on the bank are not flagged
+		local rect: Rect = { x0 = w.x - w.w / 2 + 2, z0 = w.z - w.d / 2 + 2, x1 = w.x + w.w / 2 - 2, z1 = w.z + w.d / 2 - 2 }
 		for _, s in ipairs(segs) do
 			local kind = s.road.kind
 			if kind ~= "Bridge" and kind ~= "BikeBridge" then

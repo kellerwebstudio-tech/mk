@@ -80,8 +80,8 @@ Base pay = business base + per-stud rate × route distance (bicycle graph). Tip 
 | Business | Base | Per stud | Typical distance | Typical base pay | Tip cap | Rep per delivery | Expected duration |
 |---|---|---|---|---|---|---|---|
 | Bean & Bun Café (Downtown) | $22 | $0.10 | 120–260 | $34–$48 | 30% | 5 | 45–90 s |
-| Slice Street Pizza (Downtown) | $28 | $0.09 | 150–420 | $42–$66 | 30% | 6 | 60–120 s |
-| Fresh Lane Market (Residential) | $35 | $0.10 | 200–450 | $55–$80 (+size bonus) | 25% | 9 | 90–180 s |
+| Slice Street Pizza (Downtown) | $28 | $0.09 | 130–640 | $42–$66 | 30% | 6 | 60–120 s |
+| Fresh Lane Market (Residential) | $35 | $0.10 | 160–640 | $55–$80 (+size bonus) | 25% | 9 | 90–180 s |
 | Crate & Co. Supply (Industrial) | $60 | $0.12 | 250–600 | $90–$132 (+size bonus) | 20% | 14 | 120–240 s |
 
 Size bonus: Medium +25%, Large +60%. Tutorial deliveries: $45 and $50 fixed.
