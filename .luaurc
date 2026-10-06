@@ -1,0 +1,6 @@
+{
+  "languageMode": "nonstrict",
+  "lint": { "*": true, "LocalUnused": false, "FunctionUnused": false, "ImportUnused": false },
+  "lintErrors": false,
+  "aliases": {}
+}

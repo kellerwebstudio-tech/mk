@@ -1,0 +1,77 @@
+{
+  "name": "DeliveryDashCity",
+  "globIgnorePaths": ["**/*.spec.luau", "**/*.md"],
+  "tree": {
+    "$className": "DataModel",
+
+    "ReplicatedStorage": {
+      "Shared": { "$path": "src/shared" },
+      "Remotes": { "$className": "Folder" },
+      "SharedAssets": { "$className": "Folder" }
+    },
+
+    "ServerScriptService": {
+      "DeliveryDash": { "$path": "src/server" }
+    },
+
+    "ServerStorage": {
+      "VehicleTemplates": { "$className": "Folder" },
+      "PackageTemplates": { "$className": "Folder" },
+      "NPCTemplates": { "$className": "Folder" },
+      "DepotTemplates": { "$className": "Folder" }
+    },
+
+    "StarterPlayer": {
+      "$properties": {
+        "CharacterWalkSpeed": 16,
+        "CharacterJumpPower": 50,
+        "EnableMouseLockOption": false,
+        "LoadCharacterAppearance": true
+      },
+      "StarterPlayerScripts": {
+        "DeliveryDashClient": { "$path": "src/client" }
+      }
+    },
+
+    "StarterGui": {
+      "$properties": { "ResetPlayerGuiOnSpawn": false }
+    },
+
+    "Workspace": {
+      "$properties": {
+        "StreamingEnabled": true,
+        "StreamingMinRadius": 160,
+        "StreamingTargetRadius": 720,
+        "Gravity": 196.2
+      },
+      "City": { "$className": "Folder" },
+      "PickupLocations": { "$className": "Folder" },
+      "DeliveryDestinations": { "$className": "Folder" },
+      "DepotPlots": { "$className": "Folder" },
+      "Runtime": {
+        "$className": "Folder",
+        "Vehicles": { "$className": "Folder" },
+        "Packages": { "$className": "Folder" },
+        "NPCs": { "$className": "Folder" }
+      }
+    },
+
+    "Lighting": {
+      "$properties": {
+        "Ambient": [0.45, 0.45, 0.5],
+        "OutdoorAmbient": [0.55, 0.58, 0.65],
+        "Brightness": 2.2,
+        "ClockTime": 14.2,
+        "GeographicLatitude": 30,
+        "EnvironmentDiffuseScale": 0.6,
+        "EnvironmentSpecularScale": 0.6,
+        "GlobalShadows": true,
+        "ShadowSoftness": 0.3
+      }
+    },
+
+    "SoundService": {
+      "$properties": { "RespectFilteringEnabled": true }
+    }
+  }
+}
