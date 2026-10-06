@@ -84,9 +84,15 @@ local function samplePlayer(player: Player, now: number)
 		sample.lastTime = now
 		return
 	end
+	if now < sample.suppressUntil then
+		-- Inside a server-announced teleport window: keep the server-chosen reference point and do
+		-- not adopt whatever the client reports; the first sample after the window compares
+		-- against it over the whole elapsed time.
+		return
+	end
 	local elapsed = now - sample.lastTime
 	local previous = sample.lastPosition
-	if previous and elapsed > 0 and now >= sample.suppressUntil then
+	if previous and elapsed > 0 then
 		local allowed = (maxSpeedFor(player) * EconomyConfig.speedTolerance + EconomyConfig.speedSlack) * elapsed
 		local travelled = (position - previous).Magnitude
 		if travelled > allowed then
@@ -124,12 +130,19 @@ function AntiCheatService.Start()
 	end)
 end
 
--- Suppresses movement checks for `seconds` (spawn, recover, respawn).
-function AntiCheatService.NotePlausibleTeleport(player: Player, seconds: number)
+-- Called when the SERVER moves a player (dismount, recover while driving, respawn): suppresses
+-- movement checks for `seconds` and records `newPosition` (the server-chosen destination) as the
+-- reference point for the next comparison. Never call it for client-reported movement or for
+-- actions that do not move the character (e.g. spawning a parked vehicle).
+function AntiCheatService.NotePlausibleTeleport(player: Player, seconds: number, newPosition: Vector3?)
 	local sample = getSample(player)
 	local now = os.clock()
 	sample.suppressUntil = math.max(sample.suppressUntil, now + (seconds or 3))
-	sample.lastPosition = nil
+	if typeof(newPosition) == "Vector3" then
+		sample.lastPosition = newPosition
+	else
+		sample.lastPosition = currentPosition(player)
+	end
 	sample.lastTime = now
 end
 

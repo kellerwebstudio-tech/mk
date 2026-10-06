@@ -216,6 +216,9 @@ function UIController.OpenScreen(name: string)
 	end
 	currentScreen = name
 	entry.frame.Visible = true
+	-- Keep controller navigation inside the visible screen (the HUD buttons behind the scrim stay
+	-- Selectable otherwise); re-registered on every screen switch so the group follows the screen.
+	UIKit.containSelection(entry.frame)
 	callScreen(name, "OnShow")
 	UIKit.focus(entry.frame)
 	if not wasOpen then
@@ -238,6 +241,7 @@ function UIController.CloseScreen(name: string?)
 		frame.Visible = false
 	end
 	currentScreen = nil
+	UIKit.releaseSelection()
 	setModalState(false)
 	UIController.ModalChanged:Fire(false)
 end
@@ -332,6 +336,26 @@ end
 -- Lifecycle
 -------------------------------------------------------------------------------
 
+-- Phone-width layout: the top-centre stack (tutorial banner + results card) shrinks between the
+-- wallet (left) and capacity (right) panels, and the toast column is narrowed so it never crosses
+-- the stack (both are measured in scaled design units; toasts draw above the stack otherwise).
+UIController.TOP_CENTER_WIDTH_MAX = 460
+UIController.TOP_CENTER_WIDTH_MIN = 280
+UIController.SIDE_PANEL_WIDTH = 240
+
+function UIController.Relayout()
+	if not hudGui or not topCenter then
+		return
+	end
+	-- Refresh the scale first: Roblox fires signal handlers newest-first, so this may run before the
+	-- ScreenGui's own ViewportSize handler.
+	UIKit.updateScale(hudGui)
+	local width = UIKit.contentWidth(hudGui)
+	local centreWidth = math.clamp(width - 2 * UIController.SIDE_PANEL_WIDTH - 16, UIController.TOP_CENTER_WIDTH_MIN, UIController.TOP_CENTER_WIDTH_MAX)
+	topCenter.Size = UDim2.new(0, centreWidth, 0, 420)
+	Notifications.SetWidth((width - centreWidth) / 2 - 16)
+end
+
 local function applyDevice(device: string)
 	UIKit.setTouch(device == "Touch")
 	UIKit.setGamepad(device == "Gamepad")
@@ -342,6 +366,8 @@ local function applyDevice(device: string)
 		UIKit.updateScale(menuGui)
 	end
 	HUD.Relayout()
+	Minimap.SetTouchLayout(device == "Touch")
+	UIController.Relayout()
 	if lastPromptSpec then
 		UIController.ShowPrompt(lastPromptSpec)
 	end
@@ -362,21 +388,23 @@ function UIController.Init(context)
 
 	-- HUD layer.
 	HUD.Mount(hudGui, ctx)
-	topCenter = UIKit.panel(hudGui, { name = "TopCenter", transparency = 1, corner = false, size = UDim2.new(0, 460, 0, 420), position = UDim2.new(0.5, 0, 0, 8), anchor = Vector2.new(0.5, 0), zindex = 4 })
+	topCenter = UIKit.panel(hudGui, { name = "TopCenter", transparency = 1, corner = false, size = UDim2.new(0, UIController.TOP_CENTER_WIDTH_MAX, 0, 420), position = UDim2.new(0.5, 0, 0, 8), anchor = Vector2.new(0.5, 0), zindex = 4 })
 	UIKit.listLayout(topCenter, "Vertical", 8, { halign = "Center" })
-	-- The top-centre stack shrinks between the wallet (left) and capacity (right) panels on phones.
-	local function relayoutTopCenter()
-		local width = UIKit.contentWidth(hudGui)
-		topCenter.Size = UDim2.new(0, math.clamp(width - 2 * 240 - 16, 280, 460), 0, 420)
-	end
-	relayoutTopCenter()
-	pcall(function()
-		hudGui:GetPropertyChangedSignal("AbsoluteSize"):Connect(relayoutTopCenter)
-	end)
 	TutorialBanner.Mount(topCenter, ctx)
 	ResultsToast.Mount(topCenter, ctx)
 	Notifications.Mount(hudGui, ctx)
 	Minimap.Mount(hudGui, ctx)
+	Minimap.SetTouchLayout(UIKit.device(ctx) == "Touch")
+	UIController.Relayout()
+	pcall(function()
+		hudGui:GetPropertyChangedSignal("AbsoluteSize"):Connect(UIController.Relayout)
+	end)
+	local camera = workspace.CurrentCamera
+	if camera then
+		pcall(function()
+			camera:GetPropertyChangedSignal("ViewportSize"):Connect(UIController.Relayout)
+		end)
+	end
 
 	-- Modal layer: scrim + screens.
 	scrim = UIKit.panel(menuGui, { name = "Scrim", color = UIKit.Theme.scrim, transparency = 0.45, corner = false, size = UDim2.fromScale(1, 1), visible = false, zindex = 1 })

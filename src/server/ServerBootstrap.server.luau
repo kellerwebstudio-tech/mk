@@ -9,7 +9,12 @@ local RunService = game:GetService("RunService")
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Remotes = require(Shared.Util.Remotes)
 
-local ServicesFolder = script:WaitForChild("Services")
+-- Rojo maps src/server to the Folder ServerScriptService.DeliveryDash, so this Script sits BESIDE
+-- the Services and Builders folders (never above them). A mis-mapping fails loudly instead of
+-- yielding forever on an untimed WaitForChild.
+local ServerRoot = script.Parent
+local ServicesFolder = ServerRoot:FindFirstChild("Services") or ServerRoot:WaitForChild("Services", 10)
+assert(ServicesFolder, "[ServerBootstrap] Services folder not found under " .. ServerRoot:GetFullName())
 
 local SERVICE_ORDER = {
 	"PlayerDataService",

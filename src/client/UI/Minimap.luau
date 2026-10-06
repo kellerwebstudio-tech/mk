@@ -2,12 +2,19 @@
 -- Minimap: 180x180 rounded frame (bottom-left). Draws the road graph once as thin rotated Frames
 -- inside a container scaled MAP_SCALE px/stud, keeps the player centred (north-up: world -Z is up),
 -- shows a player triangle, stop dots lettered "P"/"D" and a brighter polyline for the current path.
+-- On touch devices the bottom-left corner is Roblox's dynamic-thumbstick zone (DDC_HUD renders above
+-- TouchGui), so the map moves to the top-left below the wallet / mini-order list, shrinks to 140 px
+-- and gets a translucent background (SetTouchLayout, driven by UIController.applyDevice).
 
 local UIKit = require(script.Parent:WaitForChild("UIKit"))
 
 local Minimap = {}
 
 Minimap.SIZE = 180
+Minimap.TOUCH_SIZE = 140
+Minimap.TOUCH_TRANSPARENCY = 0.4
+-- Top-left slot under the HUD wallet (y 8..90) and the active-order mini list (y 96..198).
+Minimap.TOUCH_TOP = 206
 Minimap.MAP_SCALE = 0.35 -- pixels per stud
 Minimap.MAX_PATH_SEGMENTS = 30
 Minimap.MAX_STOPS = 12
@@ -23,9 +30,11 @@ local pathSegments: { Frame } = {}
 local stopDots: { TextLabel } = {}
 local edgeCount = 0
 local visibleSetting = true
+local touchLayout = false
+local currentSize = Minimap.SIZE
 
 local function half(): number
-	return Minimap.SIZE / 2
+	return currentSize / 2
 end
 
 -- Places a segment frame between two world positions (x/z) inside the world container.
@@ -155,8 +164,41 @@ function Minimap.Mount(parent: Instance, ctx: any): Frame
 	if ctx and ctx.graph then
 		Minimap.DrawGraph(ctx.graph)
 	end
+	Minimap.SetTouchLayout(touchLayout)
 	Minimap.ApplyVisibility()
 	return frame
+end
+
+-- Touch: top-left under the mini-order list, 140 px, translucent (keeps the dynamic thumbstick zone
+-- clear). Keyboard / gamepad: opaque 180 px bottom-left. Safe to call before Mount and repeatedly.
+function Minimap.SetTouchLayout(isTouch: boolean)
+	touchLayout = isTouch == true
+	currentSize = if touchLayout then Minimap.TOUCH_SIZE else Minimap.SIZE
+	if not frame then
+		return
+	end
+	frame.Size = UDim2.fromOffset(currentSize, currentSize)
+	if touchLayout then
+		frame.Position = UDim2.new(0, 8, 0, Minimap.TOUCH_TOP)
+		frame.AnchorPoint = Vector2.new(0, 0)
+		frame.BackgroundTransparency = Minimap.TOUCH_TRANSPARENCY
+	else
+		frame.Position = UDim2.new(0, 8, 1, -8)
+		frame.AnchorPoint = Vector2.new(0, 1)
+		frame.BackgroundTransparency = 0
+	end
+	-- Re-centre the world container and the player marker for the new size; the next Update()
+	-- re-applies the player offset on top of this.
+	world.Position = UDim2.fromOffset(half(), half())
+	playerMarker.Position = UDim2.fromOffset(half(), half())
+end
+
+function Minimap.IsTouchLayout(): boolean
+	return touchLayout
+end
+
+function Minimap.GetSize(): number
+	return currentSize
 end
 
 function Minimap.ApplyVisibility()

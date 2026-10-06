@@ -232,10 +232,12 @@ local function antiCheat()
 	return ctx and ctx.services and ctx.services.AntiCheatService
 end
 
-local function noteTeleport(player: Player, seconds: number)
+-- Tells AntiCheat that the server moved the character to `newPosition`. Only call this when the
+-- character actually moves (dismount, recover while driving, respawn), never on vehicle spawn.
+local function noteTeleport(player: Player, seconds: number, newPosition: Vector3?)
 	local anti = antiCheat()
 	if anti and anti.NotePlausibleTeleport then
-		pcall(anti.NotePlausibleTeleport, player, seconds)
+		pcall(anti.NotePlausibleTeleport, player, seconds, newPosition)
 	end
 end
 
@@ -260,12 +262,14 @@ local function nearestRoadPoint(position: Vector3, mask: number): (Vector3?, num
 	return nil, math.huge, nil
 end
 
--- Safe respawn CFrame (road point raised to ride height, facing along the edge).
+-- Safe respawn CFrame (road point raised to the vehicle's ride height, facing along the edge).
+-- CityService.GetSafeRespawnCFrame takes the raise as its third argument (5.3); the fallback
+-- computes the same thing from the graph.
 local function safeRespawnCFrame(position: Vector3, mask: number, rideHeight: number): CFrame
 	local city = cityService()
 	if city and city.GetSafeRespawnCFrame then
-		local okCall, cf = pcall(city.GetSafeRespawnCFrame, position, mask)
-		if okCall and cf then
+		local okCall, cf = pcall(city.GetSafeRespawnCFrame, position, mask, rideHeight)
+		if okCall and typeof(cf) == "CFrame" then
 			return cf
 		end
 	end
@@ -491,7 +495,7 @@ local function doDismount(player: Player, record: VehicleRecord, moveCharacter: 
 		pcall(function()
 			character:PivotTo(CFrame.lookAlong(worldPosition, flatLook(record.chassis.CFrame)))
 		end)
-		noteTeleport(player, 1)
+		noteTeleport(player, 1, worldPosition)
 	end
 	snapToGround(record)
 	zeroVelocity(record)
@@ -545,12 +549,14 @@ local function doRecover(player: Player, record: VehicleRecord): boolean
 				character:PivotTo(record.seat.CFrame + Vector3.new(0, 1.5, 0))
 			end)
 		end
+		-- Only a riding player was moved; a Parked recover moves the vehicle alone, so the
+		-- character sampler must not be reset for it.
+		noteTeleport(player, 3, record.chassis.Position)
 	else
 		record.chassis.Anchored = true
 	end
 	record.lastSafePosition = cf.Position
 	record.lastRecoverAt = os.clock()
-	noteTeleport(player, 3)
 	setState(player, record, previous)
 	return true
 end
@@ -643,7 +649,8 @@ function VehicleService.Spawn(player: Player, vehicleId: string)
 		return fail("Internal", "Could not spawn the vehicle")
 	end
 	records[player] = record
-	noteTeleport(player, 1)
+	-- The character does not move on spawn (the vehicle appears beside it), so AntiCheat is NOT told
+	-- about a teleport here; doing so would let a client reset the sampler on demand.
 	setState(player, record, "Parked")
 	return ok({ vehicleId = vehicleId })
 end
@@ -851,15 +858,18 @@ local function onCharacterAdded(player: Player, character: Model)
 
 	-- Characters spawn at the hub.
 	local hub = hubSpawnCFrame()
+	local placedAt: Vector3? = nil
 	if hub then
 		local root = getRootPart(character) or character:WaitForChild("HumanoidRootPart", 5)
 		if root and character.Parent ~= nil then
+			local target = hub + Vector3.new(0, 3, 0)
 			pcall(function()
-				character:PivotTo(hub + Vector3.new(0, 3, 0))
+				character:PivotTo(target)
 			end)
+			placedAt = target.Position
 		end
 	end
-	noteTeleport(player, 3)
+	noteTeleport(player, 3, placedAt)
 end
 
 local function onPlayerAdded(player: Player)

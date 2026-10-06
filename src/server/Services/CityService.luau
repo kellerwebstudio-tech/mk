@@ -67,12 +67,16 @@ function CityService.GetNearestRoadPoint(position: Vector3, mask: number): (Vect
 	return point, distance
 end
 
--- Nearest allowed road point raised RESPAWN_HEIGHT, facing along the edge direction.
-function CityService.GetSafeRespawnCFrame(position: Vector3, mask: number): CFrame
+-- Nearest allowed road point raised by `raise` studs (default RESPAWN_HEIGHT; VehicleService passes
+-- the vehicle's handling.rideHeight so a parked chassis sits on the asphalt), facing along the
+-- edge direction. Falls back to the hub spawn (itself RESPAWN_HEIGHT above the pad) re-based to
+-- the same raise.
+function CityService.GetSafeRespawnCFrame(position: Vector3, mask: number, raise: number?): CFrame
+	local height = if type(raise) == "number" then raise else CityService.RESPAWN_HEIGHT
 	local point, edge = RouteGraph.nearestPointOnGraph(graph, position, mask or RouteGraph.MASK_FOOT)
 	if point == nil or edge == nil then
 		local hub = world.hubSpawn
-		return hub
+		return hub + Vector3.new(0, height - CityService.RESPAWN_HEIGHT, 0)
 	end
 	local a = graph.nodes[edge.a].position
 	local b = graph.nodes[edge.b].position
@@ -80,7 +84,7 @@ function CityService.GetSafeRespawnCFrame(position: Vector3, mask: number): CFra
 	if direction.Magnitude < 1e-3 then
 		direction = Vector3.new(0, 0, -1)
 	end
-	local origin = Vector3.new(point.X, point.Y + CityService.RESPAWN_HEIGHT, point.Z)
+	local origin = Vector3.new(point.X, point.Y + height, point.Z)
 	return CFrame.lookAt(origin, origin + direction.Unit)
 end
 

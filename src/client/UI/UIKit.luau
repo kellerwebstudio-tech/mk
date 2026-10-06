@@ -319,9 +319,23 @@ function UIKit.setTouch(isTouch: boolean?)
 	touchOverride = isTouch
 end
 
+-- Close buttons of every modal (weak keys) so their gamepad hint follows device changes.
+local modalCloseButtons: { [TextButton]: boolean } = setmetatable({}, { __mode = "k" }) :: any
+
+-- "Close (B)" for controller players (B closes the open modal in UIController), plain "Close" otherwise.
+function UIKit.closeButtonText(): string
+	return if UIKit.usesGamepadSelection() then "Close (B)" else "Close"
+end
+
 -- Tells focus() whether a gamepad is the active device (set by UIController from ClientState.device).
 function UIKit.setGamepad(isGamepad: boolean?)
 	gamepadOverride = isGamepad
+	local text = UIKit.closeButtonText()
+	for button in pairs(modalCloseButtons) do
+		if button.Parent then
+			button.Text = text
+		end
+	end
 end
 
 -- True when GuiService selection should be driven: the last input device is a gamepad, or one is
@@ -968,11 +982,12 @@ function UIKit.modal(parent: Instance?, title: string, props: any): any
 
 	local header = UIKit.row(frame, { name = "Header", size = UDim2.new(1, 0, 0, UIKit.MIN_HIT), layoutOrder = 1 })
 	local titleLabel = UIKit.label(header, title, { name = "Title", bold = true, size = UDim2.new(1, -(UIKit.MODAL_CLOSE_WIDTH + 8), 1, 0), maxSize = 26, layoutOrder = 1 })
-	local closeButton = UIKit.button(header, "Close", function()
+	local closeButton = UIKit.button(header, UIKit.closeButtonText(), function()
 		if props.onClose then
 			props.onClose()
 		end
 	end, { name = "CloseButton", size = UDim2.new(0, UIKit.MODAL_CLOSE_WIDTH, 0, UIKit.MIN_HIT), layoutOrder = 2 })
+	modalCloseButtons[closeButton] = true
 	header:FindFirstChildOfClass("UIListLayout").HorizontalAlignment = Enum.HorizontalAlignment.Left
 
 	local body = UIKit.panel(frame, {
@@ -1027,6 +1042,38 @@ function UIKit.clearFocus()
 	pcall(function()
 		GuiService.SelectedObject = nil
 	end)
+end
+
+-- Gamepad selection containment. Roblox navigates GuiService.SelectedObject across every visible
+-- Selectable GuiObject in PlayerGui regardless of ScreenGui, DisplayOrder or a covering scrim, so a
+-- modal registers itself as a selection parent: D-pad / thumbstick navigation then stays inside it
+-- instead of jumping to the dimmed HUD buttons behind it. One group ("DDC_Modal") follows the
+-- currently visible screen; releaseSelection() removes it when the modal closes.
+UIKit.SELECTION_GROUP = "DDC_Modal"
+local selectionRoot: Instance? = nil
+
+function UIKit.containSelection(root: Instance?)
+	pcall(function()
+		GuiService:RemoveSelectionGroup(UIKit.SELECTION_GROUP)
+	end)
+	selectionRoot = nil
+	if root then
+		local ok = pcall(function()
+			GuiService:AddSelectionParent(UIKit.SELECTION_GROUP, root)
+		end)
+		if ok then
+			selectionRoot = root
+		end
+	end
+end
+
+function UIKit.releaseSelection()
+	UIKit.containSelection(nil)
+end
+
+-- The root selection is currently contained to (nil when no group is registered).
+function UIKit.getSelectionRoot(): Instance?
+	return selectionRoot
 end
 
 -------------------------------------------------------------------------------

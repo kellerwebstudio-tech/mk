@@ -550,6 +550,95 @@ describe("UIController", function()
 		-- the world container is offset so the player sits at the centre (90 - 100*0.35 = 55)
 		expect(frame.World.Position.X.Offset).toBeCloseTo(55, 1e-6)
 	end)
+
+	it("moves the minimap out of the touch thumbstick zone (top-left, 140 px, translucent) on touch", function()
+		local Minimap = requireClient("UI/Minimap")
+		local frame = Minimap.GetFrame()
+		-- keyboard: opaque 180 px bottom-left
+		expect(Minimap.IsTouchLayout()).toBe(false)
+		expect(frame.Size.X.Offset).toBe(180)
+		expect(frame.AnchorPoint).toEqual(Vector2.new(0, 1))
+		expect(frame.Position.Y.Scale).toBe(1)
+		expect(frame.BackgroundTransparency).toBe(0)
+		state.set("device", "Touch")
+		task.wait()
+		expect(Minimap.IsTouchLayout()).toBe(true)
+		expect(frame.Size).toEqual(UDim2.fromOffset(140, 140))
+		expect(frame.AnchorPoint).toEqual(Vector2.new(0, 0))
+		expect(frame.Position).toEqual(UDim2.new(0, 8, 0, Minimap.TOUCH_TOP))
+		expect(Minimap.TOUCH_TOP).toBeGreaterThanOrEqual(96 + 30 + 3 * 24 + 8) -- below the mini-order list
+		expect(frame.BackgroundTransparency).toBeCloseTo(0.4, 1e-6)
+		-- the map stays centred on the player for the new size (70 - 100*0.35 = 35)
+		expect(findDescendant(frame, "Player").Position).toEqual(UDim2.fromOffset(70, 70))
+		UIController.SetMinimap({ playerPosition = v3(100, 0, -50), heading = 0, stops = {} })
+		expect(frame.World.Position.X.Offset).toBeCloseTo(35, 1e-6)
+		-- back to keyboard restores the bottom-left layout
+		state.set("device", "Keyboard")
+		task.wait()
+		expect(Minimap.IsTouchLayout()).toBe(false)
+		expect(frame.Size.X.Offset).toBe(180)
+		expect(frame.AnchorPoint).toEqual(Vector2.new(0, 1))
+		expect(frame.BackgroundTransparency).toBe(0)
+		expect(findDescendant(frame, "Player").Position).toEqual(UDim2.fromOffset(90, 90))
+	end)
+
+	it("narrows the toast column on phone viewports so it never crosses the top-centre stack", function()
+		local UIKit = requireClient("UI/UIKit")
+		local hud = UIController.GetScreenGui()
+		local topCenter = findDescendant(hud, "TopCenter")
+		local toasts = findDescendant(hud, "Notifications")
+		-- 1280x720 keyboard: full-width column
+		expect(topCenter.Size.X.Offset).toBe(460)
+		expect(toasts.Size.X.Offset).toBe(340)
+		-- 667x375 touch: scale clamps to 0.75 (design viewport 889x500)
+		workspace.CurrentCamera.ViewportSize = Vector2.new(667, 375)
+		state.set("device", "Touch")
+		task.wait()
+		expect(hud.Scale.Scale).toBeCloseTo(0.75, 1e-6)
+		local width = UIKit.contentWidth(hud)
+		expect(width).toBeCloseTo(667 / 0.75, 1e-3)
+		local centreWidth = topCenter.Size.X.Offset
+		expect(centreWidth).toBeLessThan(400)
+		local sideWidth = toasts.Size.X.Offset
+		expect(sideWidth).toBeGreaterThanOrEqual(200)
+		expect(sideWidth).toBeLessThan(340)
+		-- right-anchored column at (width - 8) must start at or after the centre stack's right edge
+		local stackRight = width / 2 + centreWidth / 2
+		local toastLeft = width - 8 - sideWidth
+		expect(toastLeft).toBeGreaterThanOrEqual(stackRight)
+		-- toasts fill the column width, so they shrink with it
+		UIController.Notify("Lunch Rush complete!", "success", 2)
+		expect(findDescendant(toasts, "Toast_1").Size.X.Scale).toBe(1)
+		-- restoring the viewport widens the column again
+		workspace.CurrentCamera.ViewportSize = Vector2.new(1280, 720)
+		state.set("device", "Keyboard")
+		task.wait()
+		expect(toasts.Size.X.Offset).toBe(340)
+		expect(topCenter.Size.X.Offset).toBe(460)
+	end)
+
+	it("contains gamepad selection to the open screen and labels Close with the B hint", function()
+		local UIKit = requireClient("UI/UIKit")
+		local menus = UIController.GetMenuGui()
+		expect(UIKit.getSelectionRoot()).toBeNil()
+		UIController.OpenScreen("Orders")
+		expect(UIKit.getSelectionRoot()).toBe(findDescendant(menus, "OrderBoard"))
+		-- the group follows a screen switch
+		UIController.OpenScreen("Shop")
+		expect(UIKit.getSelectionRoot()).toBe(findDescendant(menus, "ShopMenu"))
+		UIController.CloseScreen()
+		expect(UIKit.getSelectionRoot()).toBeNil()
+		-- Close button hint follows the device
+		local close = findDescendant(findDescendant(menus, "ShopMenu"), "CloseButton")
+		expect(close.Text).toBe("Close")
+		state.set("device", "Gamepad")
+		task.wait()
+		expect(close.Text).toBe("Close (B)")
+		expect(findDescendant(findDescendant(menus, "MenuHub"), "CloseButton").Text).toBe("Close (B)")
+		state.set("device", "Keyboard")
+		task.wait()
+		expect(close.Text).toBe("Close")
+	end)
 end)
 
 describe("OrderBoard", function()
@@ -830,6 +919,57 @@ describe("ShopMenu", function()
 		ShopMenu.Update()
 		scooter = findDescendant(ShopMenu.GetList("Vehicles"), "Vehicle_Scooter")
 		expect(scooter:GetAttribute("State")).toBe("Equip")
+	end)
+
+	it("reuses vehicle previews and buttons across Update() and rebuilds a preview only when its paint changes", function()
+		local list = ShopMenu.GetList("Vehicles")
+		local scooter = findDescendant(list, "Vehicle_Scooter")
+		local preview = findDescendant(scooter, "Preview")
+		local button = findDescendant(scooter, "StateButton")
+		local model = preview:FindFirstChildOfClass("Model")
+		expect(model).never.toBeNil()
+		-- ProfileUpdated-style refreshes keep the card, the viewport, its model and the button
+		state.set("profile", makeProfile({ cash = 2000, reputation = 200 }))
+		ShopMenu.Update()
+		ShopMenu.Update()
+		expect(findDescendant(list, "Vehicle_Scooter")).toBe(scooter)
+		expect(findDescendant(scooter, "Preview")).toBe(preview)
+		expect(preview:FindFirstChildOfClass("Model")).toBe(model)
+		expect(findDescendant(scooter, "StateButton")).toBe(button)
+		expect(button.Text).toBe("Buy $1,500")
+		expect(button:GetAttribute("Disabled")).toBe(false)
+		expect(scooter:GetAttribute("State")).toBe("Buy")
+		-- a gamepad-selected button survives the refresh
+		local GuiService = game:GetService("GuiService")
+		GuiService.SelectedObject = button
+		ShopMenu.Update()
+		expect(GuiService.SelectedObject).toBe(button)
+		expect(button.Parent).never.toBeNil()
+		-- equipped vehicle: same button, now disabled and marked Equipped
+		state.set("profile", makeProfile({ cash = 0, ownedVehicles = { Bicycle = true, Scooter = true }, equippedVehicle = "Scooter" }))
+		ShopMenu.Update()
+		expect(findDescendant(scooter, "StateButton")).toBe(button)
+		expect(button.Text).toBe("Equipped")
+		expect(button:GetAttribute("Disabled")).toBe(true)
+		expect(scooter:FindFirstChildOfClass("UIStroke").Enabled).toBe(true)
+		expect(findDescendant(list, "Vehicle_Bicycle"):FindFirstChildOfClass("UIStroke").Enabled).toBe(false)
+		-- a paint change (CosmeticsController colours) rebuilds just that preview
+		local colors = { Primary = { 200, 40, 40 }, Accent = { 20, 20, 20 }, Decal = { 255, 255, 255 } }
+		ctx.controllers.CosmeticsController = {
+			GetVehicleColors = function(vehicleId)
+				return colors
+			end,
+		}
+		ShopMenu.Update()
+		local rebuilt = findDescendant(scooter, "Preview")
+		expect(rebuilt).never.toBe(preview)
+		expect(preview.Parent).toBeNil()
+		ShopMenu.Update()
+		expect(findDescendant(scooter, "Preview")).toBe(rebuilt)
+		colors = { Primary = { 10, 200, 90 }, Accent = { 20, 20, 20 }, Decal = { 255, 255, 255 } }
+		ShopMenu.Update()
+		expect(findDescendant(scooter, "Preview")).never.toBe(rebuilt)
+		expect(findDescendant(scooter, "StateButton")).toBe(button)
 	end)
 
 	it("Looks tab shows Owned/Equipped/Buy/Store only states with swatches", function()

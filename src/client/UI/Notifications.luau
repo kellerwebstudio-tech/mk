@@ -9,6 +9,8 @@ local Notifications = {}
 
 Notifications.DEFAULT_DURATION = 4
 Notifications.MAX_VISIBLE = 5
+Notifications.WIDTH = 340
+Notifications.MIN_WIDTH = 200
 
 local container: any = nil
 local toasts: { Frame } = {}
@@ -19,12 +21,26 @@ function Notifications.Mount(parent: Instance, ctx: any): Frame
 		name = "Notifications",
 		transparency = 1,
 		corner = false,
-		size = UDim2.new(0, 340, 0, 320),
+		size = UDim2.new(0, Notifications.WIDTH, 0, 320),
 		position = UDim2.new(1, -8, 0, 128),
 		anchor = Vector2.new(1, 0),
 		zindex = 5,
 	})
 	UIKit.listLayout(container, "Vertical", 6, { halign = "Right" })
+	return container
+end
+
+-- Column width in design units (toasts are full-width children). UIController narrows it on phone
+-- viewports so the column never crosses the top-centre results / tutorial stack.
+function Notifications.SetWidth(width: number)
+	if not container then
+		return
+	end
+	local clamped = math.clamp(math.floor(tonumber(width) or Notifications.WIDTH), Notifications.MIN_WIDTH, Notifications.WIDTH)
+	container.Size = UDim2.new(0, clamped, 0, 320)
+end
+
+function Notifications.GetContainer(): Frame?
 	return container
 end
 

@@ -2,7 +2,10 @@
 -- ShopMenu: "Vehicles" (cards with a ViewportFrame preview, stats, price, requirements and
 -- Buy / Equip / Equipped states) and "Looks" (cosmetics per slot with colour swatches and
 -- Owned / Equipped / Buy / Store only states). Purchases and equips go through remotes; the
--- screen refreshes on ProfileUpdated through UIController.
+-- screen refreshes on ProfileUpdated through UIController. Vehicle cards are built once and
+-- updated in place (texts, button state, stroke), so the ViewportFrame previews survive the
+-- up-to-4/s ProfileUpdated refreshes and a gamepad-selected button is never destroyed; a preview
+-- is only rebuilt when the equipped paint / decal for that vehicle changes.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
@@ -24,6 +27,8 @@ local pages: { [string]: any } = {}
 local currentTab = "Vehicles"
 local busy: { [string]: boolean } = {}
 local previews: { [string]: Model } = {}
+-- vehicleId -> { card, stroke, preview (ViewportFrame), signature, stats, button, reason, state }
+local vehicleCards: { [string]: any } = {}
 
 -------------------------------------------------------------------------------
 -- Pure evaluation (also used by tests)
@@ -120,6 +125,28 @@ end
 -- Vehicle preview
 -------------------------------------------------------------------------------
 
+-- Stable string for the colours a preview was built with (equipped paint / decal), so Update()
+-- can tell when the cached preview is stale.
+local function previewSignature(def: any): string
+	local cosmetics = ctx.controllers and ctx.controllers.CosmeticsController
+	if cosmetics and type(cosmetics.GetVehicleColors) == "function" then
+		local ok, colors = pcall(cosmetics.GetVehicleColors, def.id)
+		if ok and type(colors) == "table" then
+			local parts = {}
+			for _, key in ipairs({ "Primary", "Accent", "Decal" }) do
+				local value = colors[key]
+				if type(value) == "table" then
+					table.insert(parts, string.format("%s=%s,%s,%s", key, tostring(value[1]), tostring(value[2]), tostring(value[3])))
+				else
+					table.insert(parts, key .. "=" .. tostring(value))
+				end
+			end
+			return table.concat(parts, ";")
+		end
+	end
+	return "default"
+end
+
 local function buildPreview(parent: Instance, def: any)
 	local viewport = Instance.new("ViewportFrame")
 	viewport.Name = "Preview"
@@ -184,53 +211,93 @@ end
 -- Vehicles tab
 -------------------------------------------------------------------------------
 
-local function buildVehicleCard(parent: Instance, def: any, index: number, profile: any)
-	local state, reason = ShopMenu.VehicleState(profile, def)
-	local card = UIKit.card(parent, { name = "Vehicle_" .. def.id, height = 190, layoutOrder = index, list = false, stroke = if state == "Equipped" then UIKit.Theme.success else nil })
-	card:SetAttribute("State", state)
-	buildPreview(card, def)
+local function vehicleKey(def: any): string
+	return "vehicle:" .. def.id
+end
+
+-- Builds the static part of a vehicle card once; everything state-dependent lives in updateVehicleCard.
+local function buildVehicleCard(parent: Instance, def: any, index: number)
+	local card = UIKit.card(parent, { name = "Vehicle_" .. def.id, height = 190, layoutOrder = index, list = false, stroke = UIKit.Theme.success })
+	local stroke = card:FindFirstChildOfClass("UIStroke")
+	local entry: any = { card = card, stroke = stroke, state = "Locked" }
+	entry.preview = buildPreview(card, def)
+	entry.signature = previewSignature(def)
 
 	local column = UIKit.column(card, { name = "Info", size = UDim2.new(1, -140, 1, 0), position = UDim2.new(0, 140, 0, 0), gap = 2 })
 	UIKit.label(column, def.displayName, { name = "Name", bold = true, size = UDim2.new(1, 0, 0, 26), maxSize = 20, layoutOrder = 1 })
 	UIKit.label(column, def.description, { name = "Description", color = UIKit.Theme.textDim, size = UDim2.new(1, 0, 0, 36), valign = "Top", maxSize = 14, layoutOrder = 2 })
-	local stats = string.format("Speed %d studs/s  -  Capacity %d  -  %s", def.handling.maxSpeed, ShopMenu.CapacityFor(profile, def), ShopMenu.AccessText(def))
-	UIKit.label(column, stats, { name = "Stats", size = UDim2.new(1, 0, 0, 20), maxSize = 14, layoutOrder = 3 })
+	entry.stats = UIKit.label(column, "", { name = "Stats", size = UDim2.new(1, 0, 0, 20), maxSize = 14, layoutOrder = 3 })
 	local priceText = if def.price > 0 then string.format("%s  -  needs %d Rep", UIKit.formatCash(def.price), def.repRequired) else "Free starter vehicle"
 	UIKit.label(column, priceText, { name = "Price", color = UIKit.Theme.success, bold = true, size = UDim2.new(1, 0, 0, 20), maxSize = 15, layoutOrder = 4 })
 
 	local actions = UIKit.row(column, { name = "Actions", size = UDim2.new(1, 0, 0, UIKit.MIN_HIT), layoutOrder = 5 })
-	local button
+	-- One button whose action follows the current state (Equip / Buy); Equipped / Locked disable it.
+	entry.button = UIKit.button(actions, "Locked", function()
+		if entry.state == "Equip" then
+			run(vehicleKey(def), "EquipVehicle", def.id, def.displayName .. " equipped.")
+		elseif entry.state == "Buy" then
+			run(vehicleKey(def), "PurchaseVehicle", def.id, "You bought the " .. def.displayName .. "!")
+		end
+	end, { name = "StateButton", size = UDim2.new(0, 130, 0, UIKit.MIN_HIT), layoutOrder = 1 })
+	entry.reason = UIKit.label(actions, "", { name = "ReasonLabel", color = UIKit.Theme.warning, size = UDim2.new(1, -160, 1, 0), layoutOrder = 2, maxSize = 15 })
+	vehicleCards[def.id] = entry
+	return entry
+end
+
+local function updateVehicleCard(entry: any, def: any, profile: any)
+	local state, reason = ShopMenu.VehicleState(profile, def)
+	entry.state = state
+	entry.card:SetAttribute("State", state)
+	if entry.stroke then
+		entry.stroke.Enabled = state == "Equipped"
+	end
+	entry.stats.Text = string.format("Speed %d studs/s  -  Capacity %d  -  %s", def.handling.maxSpeed, ShopMenu.CapacityFor(profile, def), ShopMenu.AccessText(def))
+
+	-- Rebuild the preview only when the equipped colours for this vehicle changed.
+	local signature = previewSignature(def)
+	if signature ~= entry.signature then
+		if entry.preview then
+			entry.preview:Destroy()
+		end
+		entry.preview = buildPreview(entry.card, def)
+		entry.signature = signature
+	end
+
+	local button = entry.button
+	local isBusy = busy[vehicleKey(def)] == true
+	local enabled = false
 	if state == "Equipped" then
-		button = UIKit.button(actions, "Equipped", nil, { name = "StateButton", size = UDim2.new(0, 130, 0, UIKit.MIN_HIT), layoutOrder = 1, color = UIKit.Theme.success, textColor = UIKit.Theme.textOnAccent })
-		UIKit.setButtonEnabled(button, false)
+		button.Text = "Equipped"
+		UIKit.setButtonColor(button, UIKit.Theme.success, UIKit.Theme.textOnAccent)
 	elseif state == "Equip" then
-		button = UIKit.primaryButton(actions, if busy["vehicle:" .. def.id] then "..." else "Equip", function()
-			run("vehicle:" .. def.id, "EquipVehicle", def.id, def.displayName .. " equipped.")
-		end, { name = "StateButton", size = UDim2.new(0, 130, 0, UIKit.MIN_HIT), layoutOrder = 1 })
+		button.Text = if isBusy then "..." else "Equip"
+		UIKit.setButtonColor(button, UIKit.Theme.accent, UIKit.Theme.textOnAccent)
+		enabled = not isBusy
 	elseif state == "Buy" then
-		button = UIKit.primaryButton(actions, if busy["vehicle:" .. def.id] then "..." else "Buy " .. UIKit.formatCash(def.price), function()
-			run("vehicle:" .. def.id, "PurchaseVehicle", def.id, "You bought the " .. def.displayName .. "!")
-		end, { name = "StateButton", size = UDim2.new(0, 150, 0, UIKit.MIN_HIT), layoutOrder = 1 })
+		button.Text = if isBusy then "..." else "Buy " .. UIKit.formatCash(def.price)
+		UIKit.setButtonColor(button, UIKit.Theme.accent, UIKit.Theme.textOnAccent)
+		enabled = not isBusy
 	else
-		button = UIKit.button(actions, "Locked", nil, { name = "StateButton", size = UDim2.new(0, 130, 0, UIKit.MIN_HIT), layoutOrder = 1 })
-		UIKit.setButtonEnabled(button, false)
+		button.Text = "Locked"
+		UIKit.setButtonColor(button, UIKit.Theme.panelLight, UIKit.Theme.text)
 	end
-	if busy["vehicle:" .. def.id] then
-		UIKit.setButtonEnabled(button, false)
-	end
-	UIKit.label(actions, reason or "", { name = "ReasonLabel", color = UIKit.Theme.warning, size = UDim2.new(1, -160, 1, 0), layoutOrder = 2, maxSize = 15 })
+	button.Size = UDim2.new(0, if state == "Buy" then 150 else 130, 0, UIKit.MIN_HIT)
+	UIKit.setButtonEnabled(button, enabled)
+	entry.reason.Text = reason or ""
 end
 
 local function renderVehicles()
 	local list = pages.Vehicles.list
-	UIKit.clearChildren(list)
-	previews = {}
 	local profile = ctx.state.get("profile")
 	pages.Vehicles.balance.Text = string.format("Balance %s  -  Rep %d", UIKit.formatCash(profile and profile.cash or 0), profile and tonumber(profile.reputation) or 0)
 	for index, id in ipairs(VehicleDefinitions.Order) do
 		local def = VehicleDefinitions.Vehicles[id]
 		if def then
-			buildVehicleCard(list, def, index, profile)
+			local entry = vehicleCards[id]
+			if not entry or entry.card.Parent ~= list then
+				entry = buildVehicleCard(list, def, index)
+			end
+			updateVehicleCard(entry, def, profile)
 		end
 	end
 end
