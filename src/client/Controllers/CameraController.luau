@@ -88,6 +88,15 @@ function CameraController.GetOrbit(): (number, number)
 	return orbitYaw, orbitPitch
 end
 
+-- Pure helper (also used by specs): camera offset from the pivot for a forward direction and orbit.
+-- Positive pitch moves the camera up; positive yaw swings it around the pivot toward the vehicle's right side.
+function CameraController.OrbitOffset(forwardFlat: Vector3, distance: number, yaw: number, pitch: number): Vector3
+	local right = Vector3.new(-forwardFlat.Z, 0, forwardFlat.X)
+	local behind = -forwardFlat * distance
+	local rotation = CFrame.fromAxisAngle(Vector3.yAxis, yaw) * CFrame.fromAxisAngle(right, -pitch)
+	return rotation:VectorToWorldSpace(behind)
+end
+
 function CameraController.IsDriving(): boolean
 	return driving
 end
@@ -103,6 +112,11 @@ local function applyOrbitDelta(dYaw: number, dPitch: number)
 	orbitPitch = math.clamp(orbitPitch + dPitch * sensitivity * invert, CameraController.PITCH_MIN, CameraController.PITCH_MAX)
 	lastOrbitInput = os.clock()
 	recentering = false
+end
+
+-- Public orbit nudge (radians): used by specs and by any UI control that wants to orbit.
+function CameraController.ApplyOrbitDelta(dYaw: number, dPitch: number)
+	applyOrbitDelta(tonumber(dYaw) or 0, tonumber(dPitch) or 0)
 end
 
 -- Touch drags that start on the thumbstick (bottom-left) or the button cluster (bottom-right) are ignored.
@@ -138,12 +152,13 @@ local function onInputChanged(input: InputObject, processed: boolean)
 	if input.UserInputType == Enum.UserInputType.MouseMovement then
 		if rightMouseDown then
 			local delta = input.Delta
-			applyOrbitDelta(-delta.X * CameraController.MOUSE_YAW_RATE, -delta.Y * CameraController.MOUSE_PITCH_RATE)
+			-- Dragging down raises the camera (looks down), like the default Roblox camera.
+			applyOrbitDelta(-delta.X * CameraController.MOUSE_YAW_RATE, delta.Y * CameraController.MOUSE_PITCH_RATE)
 		end
 	elseif input.UserInputType == Enum.UserInputType.Touch then
 		if activeTouch == input then
 			local delta = input.Delta
-			applyOrbitDelta(-delta.X * CameraController.TOUCH_YAW_RATE, -delta.Y * CameraController.TOUCH_PITCH_RATE)
+			applyOrbitDelta(-delta.X * CameraController.TOUCH_YAW_RATE, delta.Y * CameraController.TOUCH_PITCH_RATE)
 		end
 	elseif input.KeyCode == Enum.KeyCode.Thumbstick2 then
 		local position = input.Position
@@ -237,7 +252,8 @@ local function updateCamera(dt: number)
 
 	-- Gamepad orbit is rate based.
 	if stickInput.Magnitude > 0 then
-		applyOrbitDelta(-stickInput.X * CameraController.STICK_YAW_RATE * dt, stickInput.Y * CameraController.STICK_PITCH_RATE * dt)
+		-- Right stick up looks up (camera lowers), matching the default gamepad camera.
+		applyOrbitDelta(-stickInput.X * CameraController.STICK_YAW_RATE * dt, -stickInput.Y * CameraController.STICK_PITCH_RATE * dt)
 	end
 
 	-- Auto recenter / recenter action.
@@ -264,9 +280,7 @@ local function updateCamera(dt: number)
 
 	-- Orbit rotates the follow offset around the pivot.
 	local pivot = position + Vector3.new(0, handling.cameraHeight, 0)
-	local behind = -forwardFlat * handling.cameraDistance
-	local orbitRotation = CFrame.fromAxisAngle(Vector3.yAxis, orbitYaw) * CFrame.fromAxisAngle(right, orbitPitch)
-	local offset = orbitRotation:VectorToWorldSpace(behind)
+	local offset = CameraController.OrbitOffset(forwardFlat, handling.cameraDistance, orbitYaw, orbitPitch)
 	local desiredPosition = pivot + offset
 	local lookTarget = position + forwardFlat * handling.cameraLookAhead + right * steerFor() * 4
 	if orbitYaw ~= 0 or orbitPitch ~= 0 then

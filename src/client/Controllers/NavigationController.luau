@@ -23,6 +23,7 @@ local NavigationController = {}
 NavigationController.UPDATE_INTERVAL = 0.1 -- 10 Hz
 NavigationController.RECOMPUTE_INTERVAL = 4
 NavigationController.OFF_ROUTE_DISTANCE = 24
+NavigationController.OFF_ROUTE_MIN_INTERVAL = 1 -- bounds off-route A* reruns (budget: cheap, bounded A*)
 NavigationController.MARKER_POOL = 40
 NavigationController.MARKER_SPACING = 10
 NavigationController.MARKER_RANGE = 240
@@ -489,7 +490,9 @@ local function update()
 	local progress, _, offRoute = 0, 1, 0
 	if path then
 		progress, _, offRoute = progressAlong(position)
-		if offRoute > NavigationController.OFF_ROUTE_DISTANCE then
+		-- Off-route reruns are rate limited: a player cutting through a park would otherwise trigger
+		-- an A* every update while they stay > 24 studs from the stale polyline.
+		if offRoute > NavigationController.OFF_ROUTE_DISTANCE and os.clock() - lastCompute >= NavigationController.OFF_ROUTE_MIN_INTERVAL then
 			needCompute = true
 		end
 		if (path[#path] - target.position).Magnitude > 1 then
@@ -508,8 +511,12 @@ local function update()
 	updateBillboard(target, distance)
 
 	local turnKind, turnDistance = nextTurn(progress)
-	if straight <= NavigationController.ARRIVE_DISTANCE * 2 or turnKind == nil then
+	if straight <= NavigationController.ARRIVE_DISTANCE * 2 then
 		turnKind = "Arrive"
+		turnDistance = distance
+	elseif turnKind == nil then
+		-- No turn left on the route but the stop is still far: keep going straight.
+		turnKind = "Straight"
 		turnDistance = distance
 	end
 	navActive = true
@@ -564,10 +571,16 @@ function NavigationController.Start()
 	end
 
 	-- Orders changing (accept/cancel/collect) or the stop order being edited triggers a recompute.
+	-- A reordered stop list is an explicit choice, so navigation goes back to its first stop; a
+	-- changed order set keeps the stop the player cycled to when it still exists.
 	ctx.state.Changed:Connect(function(key)
 		if key == "orders" or key == "stopOrder" then
 			path = nil
 			lastCompute = -math.huge
+		end
+		if key == "stopOrder" then
+			targetKey = nil
+			targetIndex = 1
 		end
 	end)
 

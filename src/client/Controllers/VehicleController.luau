@@ -34,6 +34,7 @@ VehicleController.FLIPPED_TIME = 1.5
 VehicleController.COSMETIC_INTERVAL = 0.05
 VehicleController.COSMETIC_RANGE = 200
 VehicleController.RESOLVE_RETRY_INTERVAL = 1 -- seconds between resolve attempts while the model is missing
+VehicleController.RAYCAST_REFRESH_INTERVAL = 2 -- seconds between rebuilds of the ground-probe filter
 VehicleController.DEFAULT_GRAVITY = 196.2
 
 export type StepState = {
@@ -91,8 +92,9 @@ function VehicleController._stepModel(state: StepState, input: StepInput, probe:
 	if probe.grounded == true and probe.slopeOk == false then
 		local cosSlope = math.clamp(normal.Y, -1, 1)
 		local sinSlope = math.sqrt(math.max(0, 1 - cosSlope * cosSlope))
-		-- Downhill direction = gravity minus its component along the normal, flattened.
-		local downhill = Vector3.new(-normal.X, 0, -normal.Z)
+		-- Downhill direction = gravity minus its component along the normal, flattened: it points the
+		-- way the normal leans (a normal tilted toward +Z means the surface drops toward +Z).
+		local downhill = Vector3.new(normal.X, 0, normal.Z)
 		if downhill.Magnitude > 1e-4 then
 			downhill = downhill.Unit
 			state.speed += gravity * sinSlope * dt * forwardFlat:Dot(downhill)
@@ -189,6 +191,7 @@ local speedFraction = 0
 local raycastParams = nil
 local resolving = false
 local resolveRetryTimer = 0
+local raycastRefreshTimer = 0
 
 local function newState(): StepState
 	return { heading = 0, speed = 0, steer = 0, vy = 0, blockedTimer = 0, posY = 0, actualForwardSpeed = 0 }
@@ -334,6 +337,12 @@ local function buildRaycastParams(): RaycastParams
 	local params = RaycastParams.new()
 	params.FilterType = Enum.RaycastFilterType.Exclude
 	params.IgnoreWater = false
+	-- Probe as a vehicle: the collision matrix (Vehicles vs Players/NPCs/Vehicles/Packages off) then
+	-- hides every character, NPC, vehicle and package from the rays, including ones that spawn
+	-- after this list was built. The explicit exclude list below is the belt to this brace.
+	pcall(function()
+		params.CollisionGroup = "Vehicles"
+	end)
 	local filter = {}
 	local folder = runtimeVehiclesFolder()
 	if folder then
@@ -449,6 +458,7 @@ local function activate()
 	state.heading = MathUtil.headingFromDirection(chassis.CFrame.LookVector)
 	state.posY = chassis.Position.Y
 	raycastParams = buildRaycastParams()
+	raycastRefreshTimer = 0
 	maxForceTimer = 0
 	roadCheckTimer = 0
 	belowRoadTimer = 0
@@ -579,6 +589,13 @@ local function stepOwner(dt: number)
 		if okInput then
 			throttle, steerInput, brake = t or 0, s or 0, b == true
 		end
+	end
+
+	-- Characters that spawned since activation must be excluded too (StreamingEnabled / joins).
+	raycastRefreshTimer += dt
+	if raycastRefreshTimer >= VehicleController.RAYCAST_REFRESH_INTERVAL then
+		raycastRefreshTimer = 0
+		raycastParams = buildRaycastParams()
 	end
 
 	local forwardFlat = MathUtil.directionFromHeading(state.heading)

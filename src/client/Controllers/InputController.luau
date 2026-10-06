@@ -17,6 +17,17 @@ local InputActions = require(Shared:WaitForChild("InputActions"))
 local InputController = {}
 
 InputController.RECOVER_HOLD_TIME = 1 -- seconds the Recover action must be held
+-- Brake shares Space with the PlayerModule jump action, which is bound at ContextActionPriority
+-- Default (2000, the same value InputActions uses). Equal priorities resolve by binding order, and a
+-- jump while seated ejects the rider, so Brake is bound above it.
+InputController.BRAKE_PRIORITY = 3000 -- Enum.ContextActionPriority.High.Value
+-- Gamepad jump (ButtonA) would likewise eject the rider; it is swallowed while Driving only.
+InputController.JUMP_GUARD_ACTION = "DDC_JumpGuard"
+InputController.JUMP_GUARD_KEYS = { Enum.KeyCode.ButtonA }
+InputController.KEY_THROTTLE_FORWARD = { Enum.KeyCode.W, Enum.KeyCode.Up }
+InputController.KEY_THROTTLE_BACK = { Enum.KeyCode.S, Enum.KeyCode.Down }
+InputController.KEY_STEER_LEFT = { Enum.KeyCode.A, Enum.KeyCode.Left }
+InputController.KEY_STEER_RIGHT = { Enum.KeyCode.D, Enum.KeyCode.Right }
 InputController.Pressed = Signal.new() -- (actionName)
 InputController.Released = Signal.new() -- (actionName)
 InputController.DeviceChanged = Signal.new() -- (device)
@@ -170,8 +181,12 @@ local function bindAll()
 		for _, key in ipairs(binding.gamepad) do
 			table.insert(keys, key)
 		end
+		local priority = binding.priority
+		if binding.name == InputActions.Names.Brake then
+			priority = math.max(priority, InputController.BRAKE_PRIORITY)
+		end
 		local okBind, err = pcall(function()
-			ContextActionService:BindActionAtPriority(binding.name, handleAction, binding.touchButton, binding.priority, table.unpack(keys))
+			ContextActionService:BindActionAtPriority(binding.name, handleAction, binding.touchButton, priority, table.unpack(keys))
 		end)
 		if not okBind then
 			warn("[InputController] failed to bind " .. binding.name .. ": " .. tostring(err))
@@ -189,6 +204,21 @@ local function bindAll()
 				applyTouchVisibility(binding.name)
 			end
 		end
+	end
+end
+
+-- Sinks the gamepad jump button while driving so pressing it does not unseat the rider.
+local function bindJumpGuard()
+	local okBind, err = pcall(function()
+		ContextActionService:BindActionAtPriority(InputController.JUMP_GUARD_ACTION, function(_, _state, _input)
+			if isDriving() then
+				return Enum.ContextActionResult.Sink
+			end
+			return Enum.ContextActionResult.Pass
+		end, false, InputController.BRAKE_PRIORITY, table.unpack(InputController.JUMP_GUARD_KEYS))
+	end)
+	if not okBind then
+		warn("[InputController] failed to bind the jump guard: " .. tostring(err))
 	end
 end
 
@@ -223,6 +253,83 @@ local function localSeat(): VehicleSeat?
 	return nil
 end
 
+local function anyKeyDown(keys: { Enum.KeyCode }): boolean
+	for _, key in ipairs(keys) do
+		local ok, isDown = pcall(function()
+			return UserInputService:IsKeyDown(key)
+		end)
+		if ok and isDown then
+			return true
+		end
+	end
+	return false
+end
+
+-- Fallback drive input when the seat floats stay at zero (the seat is kept Disabled by the server
+-- while Driving; whether the engine still feeds ThrottleFloat/SteerFloat then is unverified).
+-- Keyboard keys first, then the gamepad left stick, then the humanoid's camera-relative
+-- MoveDirection projected on the chassis axes.
+local function fallbackDriveInput(seat: VehicleSeat?): (number, number)
+	local throttle, steer = 0, 0
+	local okFocus, focused = pcall(function()
+		return UserInputService:GetFocusedTextBox()
+	end)
+	if okFocus and focused ~= nil then
+		return 0, 0 -- typing in chat must not drive the vehicle
+	end
+	if anyKeyDown(InputController.KEY_THROTTLE_FORWARD) then
+		throttle += 1
+	end
+	if anyKeyDown(InputController.KEY_THROTTLE_BACK) then
+		throttle -= 1
+	end
+	if anyKeyDown(InputController.KEY_STEER_RIGHT) then
+		steer += 1
+	end
+	if anyKeyDown(InputController.KEY_STEER_LEFT) then
+		steer -= 1
+	end
+	if throttle ~= 0 or steer ~= 0 then
+		return throttle, steer
+	end
+	if UserInputService.GamepadEnabled then
+		local okState, states = pcall(function()
+			return UserInputService:GetGamepadState(Enum.UserInputType.Gamepad1)
+		end)
+		if okState and type(states) == "table" then
+			for _, input in ipairs(states) do
+				if input.KeyCode == Enum.KeyCode.Thumbstick1 and input.Position then
+					local x, y = input.Position.X, input.Position.Y
+					if math.abs(x) > 0.15 then
+						steer = x
+					end
+					if math.abs(y) > 0.15 then
+						throttle = y
+					end
+				end
+			end
+		end
+		if throttle ~= 0 or steer ~= 0 then
+			return throttle, steer
+		end
+	end
+	local player = Players.LocalPlayer
+	local character = player and player.Character
+	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+	local move = humanoid and humanoid.MoveDirection or nil
+	if seat and typeof(move) == "Vector3" and move.Magnitude > 0.05 then
+		local cf = seat.CFrame
+		local forward = Vector3.new(cf.LookVector.X, 0, cf.LookVector.Z)
+		if forward.Magnitude > 1e-3 then
+			forward = forward.Unit
+			local right = Vector3.new(-forward.Z, 0, forward.X)
+			throttle = move:Dot(forward)
+			steer = move:Dot(right)
+		end
+	end
+	return throttle, steer
+end
+
 -- Returns throttle, steer in [-1, 1] and brake. Everything is zero + brake while a modal is open.
 function InputController.GetDriveInput(): (number, number, boolean)
 	local ui = uiController()
@@ -238,6 +345,9 @@ function InputController.GetDriveInput(): (number, number, boolean)
 	if seat then
 		throttle = tonumber(seat.ThrottleFloat) or 0
 		steer = tonumber(seat.SteerFloat) or 0
+	end
+	if throttle == 0 and steer == 0 then
+		throttle, steer = fallbackDriveInput(seat)
 	end
 
 	-- Gamepad R2 acts as an analogue throttle override.
@@ -274,6 +384,7 @@ end
 
 function InputController.Start()
 	bindAll()
+	bindJumpGuard()
 
 	UserInputService.LastInputTypeChanged:Connect(function(inputType)
 		local detected = deviceForInputType(inputType)

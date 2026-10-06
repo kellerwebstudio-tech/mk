@@ -150,22 +150,26 @@ local function depotCandidate(position: Vector3)
 	if not depot or not depot.owned or type(depot.plotId) ~= "string" then
 		return nil
 	end
+	-- The server (DepotService.Collect) measures the distance to the plot origin, i.e. the centre of
+	-- the ground slab, so the prompt uses the same anchor (never the sign, which sits ~30 studs away
+	-- at the front corner and would show the prompt where Collect fails with TooFar).
 	local plotsFolder = Workspace:FindFirstChild("DepotPlots")
 	local plot = plotsFolder and plotsFolder:FindFirstChild(depot.plotId)
 	local point: Vector3? = nil
 	if plot then
-		local sign = plot:FindFirstChild("Sign")
-		if sign and sign:IsA("BasePart") then
-			point = sign.Position
+		local ground = plot:FindFirstChild("Ground")
+		if ground and ground:IsA("BasePart") then
+			point = ground.Position
 		else
 			local okPivot, pivot = pcall(function()
 				return plot:GetPivot()
 			end)
-			if okPivot then
+			if okPivot and typeof(pivot) == "CFrame" then
 				point = pivot.Position
 			end
 		end
-	else
+	end
+	if not point then
 		local layout = ctx.layout
 		for _, entry in ipairs(layout and layout.depotPlots or {}) do
 			if entry.id == depot.plotId then
