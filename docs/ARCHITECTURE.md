@@ -415,8 +415,35 @@ Model "Vehicle" (Attributes: OwnerUserId, VehicleId, State, Capacity)
 
 ## 11. Performance budgets (provisional, unmeasured)
 - City: ≤ 4,500 parts total, all anchored; decorative parts `CanCollide=false, CanQuery=false, CanTouch=false`.
-- Vehicles: ≤ 30 parts each; one Heartbeat update on the owner, a cheap cosmetic update on other clients only for vehicles within 200 studs.
+- Vehicles: ≤ 36 parts each (the van is 33: 26 body parts, 4 wheels, chassis, body root, seat); one Heartbeat update on the owner, a cheap cosmetic update on other clients only for vehicles within 200 studs.
 - NPCs: ≤ 24 client-side pedestrians, ≤ 8 static staff/customers, updated at 20 Hz; ≤ 16 server-side depot NPC parts in total.
 - Navigation: ≤ 1 A* per 4 s per client, ≤ 4000 expansions, ≤ 40 marker parts.
 - Remotes: ≤ 2 `OrdersUpdated` per second per player; no per-frame remotes.
 - Server loops: order generation 5 s, order tick 1 s, driver tick 5 s, anti-cheat 1 s, autosave 120 s.
+
+
+## 12. Implementation notes and accepted deviations (recorded after implementation)
+
+These additions are part of the contract as built. Where they differ from the sections above, this section wins.
+
+### Server
+- `CityBuilder.build(layout, folders, graph?)` takes the Workspace folders table `{city, pickup, destinations, depots}` and an optional prebuilt `RouteGraph.Graph` (CityService passes `ctx.graph`). `ctx.world` carries an extra `partCount`; `DepotPlotWorld` entries carry `groundY`. `CityBuilder.positionsFor(layout)`, `surfaceYAt(layout, x, z)` and `elevationAt` are server-side pure helpers; the client takes world positions from streamed instances (`workspace.DeliveryDestinations.<id>.Door/ArrivalPad`, `workspace.PickupLocations.<id>.PickupPad`, which also carry `DestinationId`/`BusinessId` attributes) and falls back to layout x/z with y = 0.
+- `ctx.world.vehiclePads` are CFrames at the pad surface; VehicleService adds `handling.rideHeight`. `GetSafeRespawnCFrame` is already raised (edge y + 3).
+- `VehicleBuilder` extras: `buildDisplay`, `getSlotCFrame`, `getSlotsPerLayer`, `getRideHeight`. The LinearVelocity child is named `Velocity`; because `BasePart.Velocity` is a (deprecated) property, consumers must use `chassis:FindFirstChild("Velocity")`. `BodyMotor` lives inside `BodyRoot`; each `WheelMotor` lives inside its wheel. Builders register the collision groups idempotently because CityService.Init runs before VehicleService.Init; VehicleService owns the collidability matrix.
+- `NPCBuilder.build(kind, seed?, options?)` with `options = {name, shirt, pants}`; extras `place`, `freeze`, `setIdlePose`; limbs are Motor6Ds `TorsoJoint/Neck/LeftShoulder/RightShoulder/LeftHip/RightHip`; `Root` centre is 3 studs above the feet.
+- `PackageBuilder.build(packageKey, style?)` takes `{color, accent}` (BagStyle cosmetic data). `attachToVehicle` parents under the vehicle `Cargo` folder; `attachToCharacter` welds to `UpperTorso/Torso/HumanoidRootPart` at the back; `detach` keeps the model (Parent nil); the weld is named `AttachWeld`. OrderService sets the `OrderId` attribute.
+- `DepotBuilder.apply(plotWorld, profile, ownerName, ownerUserId?)`; everything built lives under `<plot>/Built`; `setVanPresent/isVanPresent` toggle a slot's visuals; `clear` restores the FOR SALE sign.
+- Depot plot models carry `PlotWidth/PlotDepth`; the plot `Sign` part also carries `PlotId`.
+- `VehicleService.Mount(player, targetModel?)` — pointing at another player's model returns `NotOwner`. Extras: `RunWatchdog`, `RefreshCapacity(player)`. `ctx.builders` (optional) may inject builder modules for tests.
+- `Profile.stats.milestonesGranted: {[string]: true}` (idempotent milestones). `Payout` carries extra `deliveryTime` and `milestoneRep`; `Payout.rep` is the order's repReward only.
+- `OrderService.Cancel(player, orderId, opts?)` with `opts = {silent?, noPenalty?, reason?}`; Available orders of the player may also be cancelled (used by ContractService to withdraw offers). Extras: `SetGeneratorEnabled/IsGeneratorEnabled`, `RefreshPackages`, `RunGeneration(player)`, `RunTick()`. Tutorial orders stay on the board for 24 h (`availableFor`). The generator pre-filters destinations by straight-line distance and prices the chosen order with a real A* distance.
+- `ShopService.PurchaseVehicle/PurchaseCosmetic` auto-equip the purchased item. `ShopService.ApplyUniform(player)` also runs on CharacterAdded.
+- Error code `Unavailable` is returned when a target service is not loaded; `NotReady` (with `secondsLeft`) for early pickups.
+- `TutorialUpdated` carries `{step, completed, title, body, hint}`; `TutorialService.GetHint(step)`, `GetStep`, `StepChanged` exist. Tutorial step 3 advances by server-side proximity polling (1 s). `TutorialStep` attribute is 9 for completed profiles. `InteractionService.GetSnapshot` waits up to 15 s for the profile.
+- ContractService: rush ids are `LunchRush-<n>` (orders carry that `contractId`; `Join` accepts the rush id or `LunchRush`); the first rush opens `INITIAL_DELAY` (120 s) after server start; `RewardService.GrantContractBonus` increments `stats.contractsCompleted`; `ContractPublicState.joined` carries extra `completed/failed`; cancellation reasons `ContractClosed`, `ContractExpired`, `ContractJoinFailed` (all silent, no penalty). Extras: `RunTick`, `GetCycle`, `ForceOpen(neighborhood?)`, `Stop`.
+- DepotService: `DepotPublicState.publicPlots = { {plotId, ownerName, ownerUserId, drivers} }` for social visits; `Collect` measures proximity to the plot origin and returns `WrongState` with nothing pending / `NotFound` without a claimed plot, and adds the collected amount to `stats.totalEarned`; `AssignDriver` codes: `Invalid` (bad slot), `Locked` (slot not unlocked / no depot), `NotFound`, `Requirements` ("Requires 1,200 Rep"), `WrongState` (driver out), `Insufficient`; `UnlockSlot` with both unlocked and `HireDriver` on a hired slot return `AlreadyOwned`. `WorldEvent DriverDepart/DriverReturn` go to all clients. Extras: `SetVanPresent`, `PushState`, `RefreshVisuals`, `GetPublicPlots`, `ClaimPlot/ReleasePlot/GetPlotId/GetPlot`.
+- DriverService: `TICK_INTERVAL = 5`; `OnProfileLoaded` settles due assignments before DepotService claims the plot (bootstrap order), and DepotService re-syncs van presence after the claim.
+- `PlayerDataService.ProfileLoaded` can fire synchronously during PlayerAdded; services also scan `Players:GetPlayers()` in Start.
+
+### Client
+- See section 7; `ClientState` additionally exposes `OrderEvent` and `WorldEvent` signals, `device`, and `getOrderedStops()`. `UIController` additionally exposes `TutorialContinue`, `PromptActivated` and `OpenDepotFor(plotId?)`.
