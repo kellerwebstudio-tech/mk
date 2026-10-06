@@ -6,9 +6,14 @@
 --   contract, depot, tutorial ({step, completed, title, body, hint}), serverTimeOffset,
 --   stopOrder ({orderId}), settings, device ("Keyboard" | "Gamepad" | "Touch").
 -- Also forwards server OrderEvent / WorldEvent payloads as signals.
+-- Stop / interaction positions prefer the streamed world instances when they are present
+-- (workspace.PickupLocations.<businessId>.PickupPad, workspace.DeliveryDestinations.<destinationId>
+-- .Door / .ArrivalPad, as built by the server CityBuilder) and fall back to the layout x/z with
+-- y = groundY (CityBuilder.positionsFor is server-only, so the client cannot reuse its numbers).
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Util = Shared:WaitForChild("Util")
@@ -123,8 +128,66 @@ function ClientState.getPlayerPosition(): Vector3?
 end
 
 -------------------------------------------------------------------------------
--- Stop positions from the layout
+-- Stop positions: streamed world instances first, layout fallback
 -------------------------------------------------------------------------------
+
+local function findWorldModel(folderName: string, id: string): Instance?
+	local folder = Workspace:FindFirstChild(folderName)
+	if not folder then
+		return nil
+	end
+	local model = folder:FindFirstChild(id)
+	if model then
+		return model
+	end
+	-- Streamed models can carry the id as an attribute even if renamed; scan as a fallback.
+	local attribute = folderName == "PickupLocations" and "BusinessId" or "DestinationId"
+	for _, child in ipairs(folder:GetChildren()) do
+		if child:GetAttribute(attribute) == id then
+			return child
+		end
+	end
+	return nil
+end
+
+-- Walkable-surface position of a world part: pads report their top face, doors their bottom edge.
+local function surfacePosition(part: BasePart, edge: "top" | "bottom"): Vector3
+	local position = part.Position
+	local half = part.Size.Y / 2
+	if edge == "top" then
+		return Vector3.new(position.X, position.Y + half, position.Z)
+	end
+	return Vector3.new(position.X, position.Y - half, position.Z)
+end
+
+local function worldPart(model: Instance?, name: string): BasePart?
+	if not model then
+		return nil
+	end
+	local part = model:FindFirstChild(name)
+	if part and part:IsA("BasePart") then
+		return part
+	end
+	return nil
+end
+
+-- Pickup pad top centre of a streamed business model, or nil when not streamed in.
+function ClientState.getWorldBusinessPickupPosition(businessId: string): Vector3?
+	local pad = worldPart(findWorldModel("PickupLocations", businessId), "PickupPad")
+	return pad and surfacePosition(pad, "top") or nil
+end
+
+-- Door bottom centre of a streamed destination model, or nil when not streamed in.
+function ClientState.getWorldDestinationDoorPosition(destinationId: string): Vector3?
+	local door = worldPart(findWorldModel("DeliveryDestinations", destinationId), "Door")
+	return door and surfacePosition(door, "bottom") or nil
+end
+
+-- Arrival pad top centre of a streamed destination model, or nil when not streamed in.
+function ClientState.getWorldDestinationArrivalPosition(destinationId: string): Vector3?
+	local pad = worldPart(findWorldModel("DeliveryDestinations", destinationId), "ArrivalPad")
+	return pad and surfacePosition(pad, "top") or nil
+end
 
 local function groundY(): number
 	if layout and type(layout.groundY) == "number" then
@@ -156,8 +219,13 @@ local function findById(list: any, id: string): any
 	return nil
 end
 
--- Business pickup point (layout businesses[].pickupPoint) with ground y.
+-- Business pickup point: the streamed PickupPad when present, else layout businesses[].pickupPoint
+-- with ground y.
 function ClientState.getBusinessPickupPosition(businessId: string): Vector3?
+	local world = ClientState.getWorldBusinessPickupPosition(businessId)
+	if world then
+		return world
+	end
 	if not layout then
 		return nil
 	end
@@ -177,8 +245,13 @@ function ClientState.getBusinessName(businessId: string): string
 	return businessId
 end
 
--- Destination door with ground y (or the building base height when the layout provides it).
+-- Destination door: the streamed Door part when present, else the layout door with ground y
+-- (or the building base height when the layout provides it).
 function ClientState.getDestinationDoorPosition(destinationId: string): Vector3?
+	local world = ClientState.getWorldDestinationDoorPosition(destinationId)
+	if world then
+		return world
+	end
 	if not layout then
 		return nil
 	end
@@ -190,7 +263,12 @@ function ClientState.getDestinationDoorPosition(destinationId: string): Vector3?
 	return toVector(destination.door, baseY)
 end
 
+-- Destination arrival point: the streamed ArrivalPad when present, else the layout arrivalPoint.
 function ClientState.getDestinationArrivalPosition(destinationId: string): Vector3?
+	local world = ClientState.getWorldDestinationArrivalPosition(destinationId)
+	if world then
+		return world
+	end
 	if not layout then
 		return nil
 	end

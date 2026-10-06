@@ -33,6 +33,7 @@ VehicleController.BELOW_ROAD_TIME = 2
 VehicleController.FLIPPED_TIME = 1.5
 VehicleController.COSMETIC_INTERVAL = 0.05
 VehicleController.COSMETIC_RANGE = 200
+VehicleController.RESOLVE_RETRY_INTERVAL = 1 -- seconds between resolve attempts while the model is missing
 VehicleController.DEFAULT_GRAVITY = 196.2
 
 export type StepState = {
@@ -187,6 +188,7 @@ local otherSpin = setmetatable({}, { __mode = "k" }) -- wheel part -> accumulate
 local speedFraction = 0
 local raycastParams = nil
 local resolving = false
+local resolveRetryTimer = 0
 
 local function newState(): StepState
 	return { heading = 0, speed = 0, steer = 0, vy = 0, blockedTimer = 0, posY = 0, actualForwardSpeed = 0 }
@@ -284,7 +286,12 @@ local function resolveVehicle()
 			return
 		end
 		local align = chassis:WaitForChild("Align", 5)
+		-- Fetched by name: BasePart.Velocity (the property) shadows the LinearVelocity child.
 		local velocity = chassis:WaitForChild("Velocity", 5)
+		if not align or not velocity or not align:IsA("AlignOrientation") or not velocity:IsA("LinearVelocity") then
+			refs = nil
+			return
+		end
 		local wheelsFolder = model:WaitForChild("Wheels", 5)
 		local wheels = {}
 		if wheelsFolder then
@@ -658,9 +665,25 @@ local function stepOthers(dt: number)
 	end
 end
 
+-- True while the server reports a live vehicle (anything but nil / Despawning).
+local function hasLiveVehicle(): boolean
+	local vehicle = ctx.state.get("vehicle")
+	return vehicle ~= nil and vehicle.state ~= nil and vehicle.state ~= "Despawning"
+end
+
 local function heartbeat(dt: number)
 	if refs and not refs.model.Parent then
 		refs = nil
+	end
+	-- StreamingEnabled: the model may arrive after the state event; keep trying to resolve it.
+	if not refs and not resolving and hasLiveVehicle() then
+		resolveRetryTimer += dt
+		if resolveRetryTimer >= VehicleController.RESOLVE_RETRY_INTERVAL then
+			resolveRetryTimer = 0
+			task.spawn(resolveVehicle)
+		end
+	else
+		resolveRetryTimer = 0
 	end
 	local wantRun = shouldRun()
 	if wantRun and not active then
