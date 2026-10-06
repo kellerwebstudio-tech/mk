@@ -224,8 +224,8 @@ end
 
 local function findOwnModel(): Model?
 	local vehicle = ctx.state.get("vehicle")
-	if vehicle and typeof(vehicle.model) == "Instance" and vehicle.model.Parent then
-		return vehicle.model
+	if vehicle and typeof(vehicle.model) == "Instance" and vehicle.model:IsA("Model") and vehicle.model.Parent then
+		return vehicle.model :: Model
 	end
 	local folder = runtimeVehiclesFolder()
 	if not folder then
@@ -533,7 +533,10 @@ local function safetyChecks(dt: number, chassis: BasePart)
 		roadCheckTimer = 0
 		local graph = ctx.graph
 		if graph then
-			local okNear, point = pcall(RouteGraph.nearestPointOnGraph, graph, position, VehicleDefinitions.Mask.Foot)
+			local okNear, point = pcall(function()
+				local nearest = RouteGraph.nearestPointOnGraph(graph, position, VehicleDefinitions.Mask.Foot)
+				return nearest
+			end)
 			if okNear and typeof(point) == "Vector3" then
 				if point.Y - position.Y > VehicleController.BELOW_ROAD_LIMIT then
 					belowRoadTimer += 0.5

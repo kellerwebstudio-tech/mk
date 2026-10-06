@@ -511,8 +511,11 @@ function DepotService.AssignDriver(player: Player, slot: number, category: strin
 	if not depot.owned then
 		return fail("Locked", "Buy a depot first")
 	end
-	if not isValidSlot(slot) or slot > (depot.slotsUnlocked or 0) then
+	if not isValidSlot(slot) then
 		return fail("Invalid", "Invalid slot")
+	end
+	if slot > (depot.slotsUnlocked or 0) then
+		return fail("Locked", "Unlock that slot first")
 	end
 	local entry = depot.drivers and depot.drivers[slot]
 	if not entry or not entry.hired then
@@ -658,11 +661,12 @@ local function onProfileLoaded(player: Player, profile: Profile)
 			end
 		end
 		DepotService.ClaimPlot(player)
-		-- Drivers that are still out keep their van away.
+		-- Sync van visuals with the persisted assignments: drivers still out keep their van away,
+		-- finished runs (including ones settled offline by DriverService) show the van back.
 		for index, slot in ipairs(profile.depot.drivers or {}) do
 			local assignment = slot.assignment
-			if type(assignment) == "table" and not assignment.completed then
-				DepotService.SetVanPresent(player, index, false)
+			if type(assignment) == "table" then
+				DepotService.SetVanPresent(player, index, assignment.completed == true)
 			end
 		end
 	end
