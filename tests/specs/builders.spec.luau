@@ -164,6 +164,43 @@ describe("CityBuilder", function()
 		end
 	end)
 
+	it("places the hub kiosk outside every building and clear of the vehicle pads", function()
+		-- The authored kiosk once sat at the centre of the "Dash Hub Kiosk" building body, so the
+		-- kiosk part, its screen and its billboard were built inside a solid box.
+		local kiosk = layout.hub.kiosk
+		for _, b in ipairs(layout.buildings or {}) do
+			local rot = math.rad(b.rot or 0)
+			local dx, dz = kiosk.x - b.x, kiosk.z - b.z
+			local lx = dx * math.cos(rot) + dz * math.sin(rot)
+			local lz = -dx * math.sin(rot) + dz * math.cos(rot)
+			local inside = math.abs(lx) <= b.w / 2 + 1 and math.abs(lz) <= b.d / 2 + 1
+			expect(inside).toBe(false)
+		end
+		-- A player standing on a pad (6 x 12, pad centre +- 3 / +- 6) must get the pad's own
+		-- prompt, not the kiosk's (InteractionController.KIOSK_DISTANCE = 6).
+		for _, pad in ipairs(layout.hub.vehiclePads) do
+			local nearestX = math.clamp(kiosk.x, pad.x - 3, pad.x + 3)
+			local nearestZ = math.clamp(kiosk.z, pad.z - 6, pad.z + 6)
+			local distance = math.sqrt((nearestX - kiosk.x) ^ 2 + (nearestZ - kiosk.z) ^ 2)
+			expect(distance).toBeGreaterThan(6)
+		end
+		if not synthetic then
+			-- Built hub: the kiosk part is not enclosed by any colliding building body.
+			local folders = makeCityFolders()
+			CityBuilder.build(layout, folders)
+			local kioskPart = folders.city:FindFirstChild("Kiosk", true)
+			expect(kioskPart).toBeTruthy()
+			local p = kioskPart.Position
+			for _, part in ipairs(folders.city:GetDescendants()) do
+				if part:IsA("BasePart") and part ~= kioskPart and part.CanCollide and part.Size.X >= 20 and part.Size.Y >= 8 then
+					local rel = part.CFrame:PointToObjectSpace(p)
+					local enclosed = math.abs(rel.X) < part.Size.X / 2 and math.abs(rel.Y) < part.Size.Y / 2 and math.abs(rel.Z) < part.Size.Z / 2
+					expect(enclosed).toBe(false)
+				end
+			end
+		end
+	end)
+
 	it("positionsFor uses road elevation where available", function()
 		local elevated = syntheticLayout()
 		elevated.roads = { { id = "High", name = "High", kind = "Road", width = 12, points = { { x = -100, y = 20, z = 0 }, { x = 100, y = 20, z = 0 } } } }
@@ -474,6 +511,29 @@ describe("VehicleBuilder", function()
 		local bdef = VehicleDefinitions.get("Bicycle")
 		expect(b2.Y).toBeCloseTo(bdef.cargoOffset[2] + bdef.cargoLayout.spacingY, 1e-6)
 		expect(b2.X).toBeCloseTo(bdef.cargoOffset[1], 1e-6)
+	end)
+
+	it("van seat leaves headroom for a seated R15 rig under the cab roof", function()
+		-- A seated R15 rig stacks roughly 3.5-4 studs above the seat surface, so the cab
+		-- roof underside must sit at least ~4 studs above the seat top (vehicle-9).
+		local def = VehicleDefinitions.get("Van")
+		local seatTop = def.seatOffset[2] + 0.25 -- VehicleSeat is 0.5 thick
+		local roof, cabLower
+		for _, part in ipairs(def.visual.parts) do
+			if part.name == "CabRoof" then
+				roof = part
+			elseif part.name == "CabLower" then
+				cabLower = part
+			end
+		end
+		expect(roof).toBeTruthy()
+		expect(cabLower).toBeTruthy()
+		local roofUnderside = roof.offset[2] - roof.size[2] / 2
+		expect(roofUnderside - seatTop >= 4).toBe(true)
+		-- the seat stays inside the chassis / cab shell rather than floating above it
+		local cabTop = cabLower.offset[2] + cabLower.size[2] / 2
+		expect(seatTop <= cabTop).toBe(true)
+		expect(seatTop >= -def.chassisSize[2] / 2).toBe(true)
 	end)
 
 	it("applyCosmetics recolours PaintSlot parts", function()

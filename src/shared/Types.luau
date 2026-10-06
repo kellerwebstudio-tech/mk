@@ -170,6 +170,14 @@ export type DepotCategoryView = {
 	requirement: string?,
 }
 
+-- One plot in the "Depots in this server" list; `drivers` is the owner's hired-slot count.
+export type DepotPublicPlot = {
+	plotId: string,
+	ownerName: string,
+	ownerUserId: number,
+	drivers: number,
+}
+
 export type DepotPublicState = {
 	owned: boolean,
 	plotId: string?,
@@ -178,6 +186,7 @@ export type DepotPublicState = {
 	pendingTotal: number,
 	categories: { DepotCategoryView },
 	serverTime: number,
+	publicPlots: { DepotPublicPlot }?,
 }
 
 export type VehicleRecord = {

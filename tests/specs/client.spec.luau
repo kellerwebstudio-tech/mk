@@ -1052,6 +1052,43 @@ describe("InteractionController", function()
 		expect(spawnedId).toBe("Scooter")
 	end)
 
+	it("offers Take vehicle at the pad again after the vehicle despawns", function()
+		local spawnedId = nil
+		local ctx, ui, ClientState = setup({ "InputController", "InteractionController" }, {
+			handlers = {
+				SpawnVehicle = function(player, vehicleId)
+					spawnedId = vehicleId
+					return { ok = true, vehicleId = vehicleId }
+				end,
+			},
+		})
+		spawnAt(12, 34)
+		ClientState.set("profile", { equippedVehicle = "Bicycle", upgrades = {} })
+		local model = buildVehicleModel("Bicycle", 1, v3(200, 0, 200))
+		ClientState.set("vehicle", { state = "Parked", vehicleId = "Bicycle", model = model })
+		ctx.controllers.InteractionController.Refresh()
+		-- A vehicle parked far away: nothing to do at the pad.
+		expect(ui.prompt).toBeNil()
+
+		-- The server's terminal event stored raw (the bootstrap normally maps it to nil first).
+		ClientState.set("vehicle", { state = "Despawning", vehicleId = nil, model = nil })
+		ctx.controllers.InteractionController.Refresh()
+		expect(ui.prompt).never.toBeNil()
+		expect(ui.prompt.text).toBe("Take vehicle")
+		press(InputActions.Names.MountDismount)
+		shim.advance(0.1)
+		expect(spawnedId).toBe("Bicycle")
+
+		-- And the normalised form behaves the same.
+		spawnedId = nil
+		ClientState.set("vehicle", { state = nil, vehicleId = nil, model = nil })
+		ctx.controllers.InteractionController.Refresh()
+		expect(ui.prompt.text).toBe("Take vehicle")
+		press(InputActions.Names.MountDismount)
+		shim.advance(0.1)
+		expect(spawnedId).toBe("Bicycle")
+	end)
+
 	it("opens the order board at the kiosk and the depot screen at the own plot", function()
 		local ctx, ui, ClientState = setup({ "InputController", "InteractionController" })
 		spawnAt(0, 44)
@@ -1306,8 +1343,63 @@ describe("TutorialController", function()
 		shim.advance(0.05)
 		expect(advanced).toEqual({ 6 })
 
+		-- Finishing in-session: the server sends step 9 already completed (ProfileUpdated first,
+		-- then TutorialUpdated with the texts); the "You're ready" card stays up until Continue.
+		ClientState.set("tutorial", { step = 8, completed = false })
+		expect(ui.tutorial.step).toBe(8)
 		ClientState.set("tutorial", { step = 9, completed = true })
+		expect(ui.tutorial).never.toBeNil()
+		expect(ui.tutorial.title).toBe("You're ready")
+		expect(ui.tutorial.hint).toBe("Tap Continue to finish")
+		expect(ui.tutorial.dismissable).toBe(true)
+		ClientState.set("tutorial", { step = 9, completed = true, title = "You're ready", body = "The city is yours.", hint = "" })
+		expect(ui.tutorial.body).toBe("The city is yours.")
+		expect(ui.tutorial.hint).toBe("Tap Continue to finish")
+		ui.TutorialContinue:Fire()
+		-- closes locally at once (the server acks without another TutorialUpdated)
 		expect(ui.tutorial).toBeNil()
+		shim.advance(0.05)
+		expect(advanced).toEqual({ 6, 9 })
+		-- a later re-send of the completed state (e.g. a profile refresh) does not bring it back
+		ClientState.set("tutorial", { step = 9, completed = true, title = "You're ready" })
+		expect(ui.tutorial).toBeNil()
+	end)
+
+	it("never shows the final card to a returning player whose tutorial is already complete", function()
+		local ctx, ui, ClientState = setup({ "TutorialController" })
+		ClientState.set("tutorial", { step = 9, completed = true, title = "You're ready", body = "The city is yours." })
+		expect(ui.tutorial).toBeNil()
+		expect(ctx.controllers.TutorialController.GetCurrentSpec()).toBeNil()
+	end)
+
+	it("shows no banner before the profile is known and tells the player when Continue is rejected", function()
+		local calls = 0
+		local ctx, ui, ClientState = setup({ "TutorialController" }, {
+			handlers = {
+				AdvanceTutorial = function()
+					calls += 1
+					return { ok = false, error = "Locked", message = "Your profile is still loading" }
+				end,
+			},
+		})
+		shim.advance(0.05)
+		-- Default state: nothing is known about the player yet, so no welcome banner.
+		expect(ClientState.get("tutorial")).toBeNil()
+		expect(ui.tutorial).toBeNil()
+		expect(ctx.controllers.TutorialController.GetCurrentSpec()).toBeNil()
+		ui.TutorialContinue:Fire()
+		shim.advance(0.05)
+		expect(calls).toBe(0)
+		expect(#ui.notifications).toBe(0)
+
+		ClientState.set("tutorial", { step = 0, completed = false })
+		expect(ui.tutorial.title).toBe("Welcome to Delivery Dash City")
+		ui.TutorialContinue:Fire()
+		shim.advance(0.05)
+		expect(calls).toBe(1)
+		expect(#ui.notifications).toBe(1)
+		expect(ui.notifications[1].kind).toBe("warning")
+		expect(ui.notifications[1].text).toMatch("loading")
 	end)
 end)
 
@@ -1379,7 +1471,16 @@ describe("CosmeticsController", function()
 		expect(decal.Color).toBeCloseTo(Color3.fromRGB(230, 190, 70), 1e-3)
 		-- Rotation convention: offset then Angles(rad x, rad y, rad z).
 		local windshield = model.Body:FindFirstChild("Windshield")
-		local expected = CFrame.new(0, VehicleDefinitions.Vehicles.Van.handling.rideHeight, 0) * CFrame.new(0, 3.0, -5.3) * CFrame.Angles(math.rad(22), 0, 0)
+		local wsDef
+		for _, part in ipairs(VehicleDefinitions.Vehicles.Van.visual.parts) do
+			if part.name == "Windshield" then
+				wsDef = part
+			end
+		end
+		expect(wsDef).toBeTruthy()
+		local expected = CFrame.new(0, VehicleDefinitions.Vehicles.Van.handling.rideHeight, 0)
+			* CFrame.new(wsDef.offset[1], wsDef.offset[2], wsDef.offset[3])
+			* CFrame.Angles(math.rad(wsDef.rot[1]), math.rad(wsDef.rot[2]), math.rad(wsDef.rot[3]))
 		expect(windshield.CFrame).toBeCloseTo(expected, 1e-4)
 	end)
 end)
@@ -1521,7 +1622,9 @@ describe("ClientBootstrap", function()
 		expect(ClientState.get("serverTimeOffset")).toBeCloseTo(600, 0.2)
 		expect(orderEvents).toEqual({ "Accepted" })
 		expect(worldEvents).toEqual({ "DriverDepart" })
-		expect(ClientState.get("vehicle").state).toBe("Despawning")
+		-- Despawning is the server's terminal event: it is normalised to "no vehicle".
+		expect(ClientState.get("vehicle").state).toBeNil()
+		expect(ClientState.get("vehicle").vehicleId).toBeNil()
 		expect(ClientState.get("vehicle").model).toBeNil()
 		expect(ClientState.get("tutorial").step).toBe(3)
 		expect(ClientState.get("tutorial").title).toBe("Ride")

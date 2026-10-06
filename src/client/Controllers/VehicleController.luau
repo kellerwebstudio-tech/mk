@@ -192,6 +192,7 @@ local raycastParams = nil
 local resolving = false
 local resolveRetryTimer = 0
 local raycastRefreshTimer = 0
+local jumpLockedHumanoid: Humanoid? = nil -- humanoid whose Jumping state we disabled while driving
 
 local function newState(): StepState
 	return { heading = 0, speed = 0, steer = 0, vy = 0, blockedTimer = 0, posY = 0, actualForwardSpeed = 0 }
@@ -451,6 +452,30 @@ local function sendHud()
 	})
 end
 
+-- The PlayerModule touch jump button writes Humanoid.Jump directly (no ContextActionService
+-- binding to sink, unlike Space / ButtonA which InputController guards), so while we drive the
+-- rider's Jumping state is disabled outright. The server dismount does not depend on it: it
+-- destroys the SeatWeld and sets Sit = false (VehicleService.unseat).
+local function unlockJump()
+	local humanoid = jumpLockedHumanoid
+	jumpLockedHumanoid = nil
+	if humanoid then
+		pcall(humanoid.SetStateEnabled, humanoid, Enum.HumanoidStateType.Jumping, true)
+	end
+end
+
+local function lockJump()
+	local humanoid = localHumanoid()
+	if humanoid == nil or humanoid == jumpLockedHumanoid then
+		return
+	end
+	unlockJump()
+	local ok = pcall(humanoid.SetStateEnabled, humanoid, Enum.HumanoidStateType.Jumping, false)
+	if ok then
+		jumpLockedHumanoid = humanoid
+	end
+end
+
 local function activate()
 	active = true
 	state = newState()
@@ -463,15 +488,22 @@ local function activate()
 	roadCheckTimer = 0
 	belowRoadTimer = 0
 	flippedTimer = 0
+	lockJump()
 	pcall(function()
 		refs.velocity.MaxForce = chassis.AssemblyMass * VehicleController.MAX_FORCE_PER_MASS
 		refs.velocity.VectorVelocity = Vector3.zero
+		-- The locally replicated Align target is stale (identity on the first ride, the previous
+		-- ride's last heading afterwards); aim it at the current orientation before the first
+		-- owned physics step so the vehicle does not twist while stepOwner catches up.
+		refs.align.CFrame = chassis.CFrame.Rotation
 	end)
 end
 
 local function deactivate()
 	active = false
 	speedFraction = 0
+	-- Restore jumping for any stop reason (dismount, death, state change, character removed).
+	unlockJump()
 	if refs then
 		pcall(function()
 			refs.velocity.VectorVelocity = Vector3.zero

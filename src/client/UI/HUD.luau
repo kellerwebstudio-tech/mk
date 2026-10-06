@@ -2,7 +2,10 @@
 -- HUD: the always-visible layer. Top-left cash + reputation (with progress to the next business
 -- unlock) and an active-order mini list; top-right capacity meter plus Orders / Menu buttons;
 -- bottom-centre compact navigation strip; bottom-right vehicle readout. The centre of the screen
--- stays empty so the road is visible. The root is a CanvasGroup so it can dim behind modals.
+-- stays empty so the road is visible. The root is a plain Frame: a CanvasGroup would re-rasterise
+-- the whole viewport every time the speed bar moves (every frame while driving); the modal scrim in
+-- DDC_Menus (drawn above this layer) already dims the HUD when a screen is open, so SetDimmed only
+-- records the state.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
@@ -18,6 +21,10 @@ HUD.LATE_SOON_FRACTION = 0.25
 HUD.NAV_WIDTH_MAX = 420
 HUD.NAV_WIDTH_MIN = 300
 HUD.SIDE_RESERVE = 196 -- minimap (180 + margins) on the left, vehicle readout on the right
+HUD.SPEED_STEPS = 200 -- speed bar resolution (fraction steps) below which a frame is not redrawn
+-- Touch: the bottom-right corner holds Roblox's jump button and the ContextActionService button
+-- cluster (DDC_HUD draws above TouchGui), so the vehicle readout is raised above them.
+HUD.VEHICLE_HUD_TOUCH_BOTTOM = 150
 
 local TURN_GLYPHS = {
 	Left = "<-",
@@ -43,6 +50,8 @@ local root: any = nil
 local refs: { [string]: any } = {}
 local miniRows: { any } = {}
 local lastNav = nil
+local lastVehicleHud = nil -- { vehicleId, fraction, loadText } last written (skip identical frames)
+local dimmed = false
 
 -------------------------------------------------------------------------------
 -- Helpers
@@ -210,15 +219,16 @@ local function buildVehicleHud(parent: Instance)
 		corner = 10,
 		visible = false,
 	})
+	refs.vehicleHud = panel
 	UIKit.padding(panel, 6, 10, 6)
 	refs.vehicleName = UIKit.label(panel, "", { name = "VehicleName", bold = true, size = UDim2.new(1, 0, 0, 20), maxSize = 16 })
 	refs.speedBar = UIKit.progressBar(panel, { name = "SpeedBar", size = UDim2.new(1, 0, 0, 6), position = UDim2.new(0, 0, 0, 24), color = UIKit.Theme.info })
 	refs.vehicleLoad = UIKit.label(panel, "", { name = "VehicleLoad", color = UIKit.Theme.textDim, size = UDim2.new(1, 0, 0, 14), position = UDim2.new(0, 0, 0, 32), minSize = 12, maxSize = 13 })
 end
 
-function HUD.Mount(parent: Instance, context: any): CanvasGroup
+function HUD.Mount(parent: Instance, context: any): Frame
 	ctx = context
-	root = Instance.new("CanvasGroup")
+	root = Instance.new("Frame")
 	root.Name = "HUD"
 	root.BackgroundTransparency = 1
 	root.Size = UDim2.fromScale(1, 1)
@@ -237,7 +247,9 @@ function HUD.Mount(parent: Instance, context: any): CanvasGroup
 end
 
 -- Narrow (phone) viewports: the bottom nav strip shrinks so it never covers the minimap or the
--- vehicle readout. Width is measured in scaled design units.
+-- vehicle readout. Width is measured in scaled design units. On touch the vehicle readout leaves
+-- the bottom-right corner (jump button + action cluster); UIController.applyDevice calls this
+-- after UIKit.setTouch so a device change re-places it.
 function HUD.Relayout()
 	if not root then
 		return
@@ -245,6 +257,8 @@ function HUD.Relayout()
 	local width = UIKit.contentWidth(root.Parent)
 	local navWidth = math.clamp(width - 2 * HUD.SIDE_RESERVE - 16, HUD.NAV_WIDTH_MIN, HUD.NAV_WIDTH_MAX)
 	refs.nav.Size = UDim2.new(0, navWidth, 0, 76)
+	local bottom = if UIKit.isTouchLayout() then HUD.VEHICLE_HUD_TOUCH_BOTTOM else 8
+	refs.vehicleHud.Position = UDim2.new(1, -8, 1, -bottom)
 end
 
 -------------------------------------------------------------------------------
@@ -413,23 +427,42 @@ function HUD.SetVehicleHud(data: any)
 	local panel = root:FindFirstChild("VehicleHud")
 	if type(data) ~= "table" or data.state ~= "Driving" then
 		panel.Visible = false
+		lastVehicleHud = nil
 		return
 	end
-	refs.vehicleName.Text = tostring(data.vehicleId or "Vehicle")
-	refs.speedBar.set(math.clamp(tonumber(data.speedFraction) or 0, 0, 1))
-	refs.vehicleLoad.Text = if data.loadText and data.loadText ~= "" then "Load " .. tostring(data.loadText) else ""
+	-- VehicleController sends this every Heartbeat; only touch the instances when the visible
+	-- values change (the bar is quantised to HUD.SPEED_STEPS, finer than a pixel at its width).
+	local vehicleId = tostring(data.vehicleId or "Vehicle")
+	local fraction = math.floor(math.clamp(tonumber(data.speedFraction) or 0, 0, 1) * HUD.SPEED_STEPS + 0.5) / HUD.SPEED_STEPS
+	local loadText = if data.loadText and data.loadText ~= "" then "Load " .. tostring(data.loadText) else ""
+	local last = lastVehicleHud
+	if last and last.vehicleId == vehicleId and last.fraction == fraction and last.loadText == loadText and panel.Visible then
+		return
+	end
+	lastVehicleHud = { vehicleId = vehicleId, fraction = fraction, loadText = loadText }
+	if not last or last.vehicleId ~= vehicleId then
+		refs.vehicleName.Text = vehicleId
+	end
+	if not last or last.fraction ~= fraction then
+		refs.speedBar.set(fraction)
+	end
+	if not last or last.loadText ~= loadText then
+		refs.vehicleLoad.Text = loadText
+	end
 	panel.Visible = true
 end
 
--- Dims the HUD while a modal is open.
-function HUD.SetDimmed(dimmed: boolean)
-	if not root then
-		return
-	end
-	UIKit.tween(root, { GroupTransparency = if dimmed then 0.45 else 0 }, 0.15)
+-- Records that a modal is open. The visible dim comes from UIController's scrim in the DDC_Menus
+-- ScreenGui (DisplayOrder above the HUD), so no HUD property changes here.
+function HUD.SetDimmed(isDimmed: boolean)
+	dimmed = isDimmed == true
 end
 
-function HUD.GetRoot(): CanvasGroup?
+function HUD.IsDimmed(): boolean
+	return dimmed
+end
+
+function HUD.GetRoot(): Frame?
 	return root
 end
 

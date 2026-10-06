@@ -201,6 +201,19 @@ local function setNetworkOwner(record: VehicleRecord, player: Player?)
 	end)
 end
 
+-- Points the chassis AlignOrientation (OneAttachment mode: a world-space target) at the chassis'
+-- current rotation. VehicleBuilder writes it once at identity; Model:PivotTo never rewrites a
+-- constraint target, so without this every unanchored moment before the owner client's first
+-- step (Mount seat verification, server-simulated) yaws the vehicle toward world -Z.
+local function syncAlign(chassis: BasePart)
+	local align = chassis:FindFirstChild("Align")
+	if align and align:IsA("AlignOrientation") then
+		pcall(function()
+			align.CFrame = chassis.CFrame.Rotation
+		end)
+	end
+end
+
 local function definitionFor(record: VehicleRecord)
 	return VehicleDefinitions.get(record.vehicleId) or VehicleDefinitions.Vehicles.Bicycle
 end
@@ -427,6 +440,7 @@ local function createVehicle(player: Player, vehicleId: string, cf: CFrame): (Ve
 		model:AddPersistentPlayer(player)
 	end)
 	model:PivotTo(cf)
+	syncAlign(chassis)
 
 	local record: VehicleRecord = {
 		model = model,
@@ -456,6 +470,7 @@ local function snapToGround(record: VehicleRecord)
 	local groundY = groundHeightAt(position, record.model)
 	local target = Vector3.new(position.X, groundY + def.handling.rideHeight, position.Z)
 	record.model:PivotTo(CFrame.lookAlong(target, flatLook(chassis.CFrame)))
+	syncAlign(chassis)
 end
 
 local function unseat(record: VehicleRecord, humanoid: Humanoid?)
@@ -541,6 +556,7 @@ local function doRecover(player: Player, record: VehicleRecord): boolean
 	local cf = safeRespawnCFrame(record.lastSafePosition, def.mask, def.handling.rideHeight)
 	zeroVelocity(record)
 	record.model:PivotTo(cf)
+	syncAlign(record.chassis)
 	if previous == "Driving" then
 		-- The rider is welded to the seat; move the character explicitly so it never lags behind.
 		local character = player.Character
@@ -694,6 +710,9 @@ function VehicleService.Mount(player: Player, targetModel: Model?)
 	end
 
 	setState(player, record, "Mounting")
+	-- The chassis is simulated by the server until ownership passes to the rider below; make sure
+	-- the orientation target is the parked heading before anything can act on it.
+	syncAlign(record.chassis)
 	record.chassis.Anchored = false
 	local seated = trySeat(record, humanoid)
 	if records[player] ~= record or record.state ~= "Mounting" then

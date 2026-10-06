@@ -19,6 +19,7 @@ local Remotes = require(Shared.Util.Remotes)
 local TableUtil = require(Shared.Util.TableUtil)
 local ContractDefinitions = require(Shared.Definitions.ContractDefinitions)
 local OrderDefinitions = require(Shared.Definitions.OrderDefinitions)
+local BusinessDefinitions = require(Shared.Definitions.BusinessDefinitions)
 local EconomyConfig = require(Shared.Config.EconomyConfig)
 
 type Order = Types.Order
@@ -170,6 +171,24 @@ local function destinationAccepts(entry, size: string): boolean
 		return true
 	end
 	return accepts[size] == true
+end
+
+-- Whether a business may deliver to a layout destination entry according to its deliveryProfile
+-- (neighbourhood and, when set, destination kind). The rush neighbourhood is the primary filter;
+-- this keeps e.g. groceries off Industrial loading bays (BusinessDefinitions.deliveryProfile).
+local function businessServes(businessId: string, entry): boolean
+	local business = BusinessDefinitions.get(businessId)
+	local profileDef = business and business.deliveryProfile
+	if type(profileDef) ~= "table" then
+		return true
+	end
+	if type(profileDef.neighborhoods) == "table" and not profileDef.neighborhoods[entry.neighborhood] then
+		return false
+	end
+	if type(profileDef.kinds) == "table" and not profileDef.kinds[entry.kind] then
+		return false
+	end
+	return true
 end
 
 local function neighborhoodDestinations(neighborhood: string): { any }
@@ -335,9 +354,15 @@ local function createOffers(player: Player)
 				table.insert(acceptable, size)
 			end
 		end
-		if #acceptable > 0 then
+		local servers = {}
+		for _, businessId in ipairs(businesses) do
+			if businessServes(businessId, entry) then
+				table.insert(servers, businessId)
+			end
+		end
+		if #acceptable > 0 and #servers > 0 then
 			local size = acceptable[rng:NextInteger(1, #acceptable)]
-			local businessId = businesses[rng:NextInteger(1, #businesses)]
+			local businessId = servers[rng:NextInteger(1, #servers)]
 			local okCreate, order = pcall(orders.CreateOrder, player, {
 				businessId = businessId,
 				destinationId = entry.id,
@@ -567,7 +592,7 @@ function ContractService.Join(player: Player, contractId: string, orderIds: { st
 	-- Accept every order; if one fails, roll the batch back so nothing half-joined remains.
 	local accepted = {}
 	for _, order in ipairs(batch) do
-		local result = orders.Accept(player, order.id)
+		local result = orders.Accept(player, order.id, { viaContract = true })
 		if not result or not result.ok then
 			for _, done in ipairs(accepted) do
 				pcall(orders.Cancel, player, done.id, { silent = true, noPenalty = true, reason = "ContractJoinFailed" })
@@ -645,6 +670,16 @@ local function onOrderDelivered(player: Player, order: Order)
 	pushState(player)
 end
 
+-- Defensive: an offer that became Accepted by any path leaves the offer list (Join removes its
+-- own ids as well; OrderService refuses direct accepts of contract orders).
+local function onOrderAccepted(player: Player, order: Order)
+	local st = players[player]
+	if st and order and st.offerIds[order.id] then
+		removeOffer(st, order.id)
+		pushState(player)
+	end
+end
+
 local function onOrderRemoved(player: Player, order: Order, reason: string?)
 	local st = players[player]
 	if not st or not order then
@@ -714,6 +749,9 @@ function ContractService.Start()
 	end
 	local orders = service("OrderService")
 	if orders then
+		if orders.OrderAccepted then
+			orders.OrderAccepted:Connect(onOrderAccepted)
+		end
 		if orders.OrderDelivered then
 			orders.OrderDelivered:Connect(onOrderDelivered)
 		end

@@ -17,7 +17,7 @@ This repository is a complete **Rojo** project (Luau source + authored city data
 
 ## Honest status
 
-- Built and verified **offline only**: Luau syntax/type analysis (`luau-lsp`), unit/integration specs executed with the standalone `luau` CLI against a Roblox API mock, and a `rojo build` of the place file.
+- Built and verified **offline only**: Luau syntax/type analysis (`luau-lsp`, 0 diagnostics), 295 unit/integration specs executed with the standalone `luau` CLI against a Roblox API mock, a `rojo build` of the place file, the city layout validator, and an adversarial multi-lens code review (33 confirmed findings fixed). See `docs/VERIFICATION.md`.
 - **No live Roblox Studio playtest has been run** by the authors of this repository. Physics tuning values, UI layout on real devices and DataStore behaviour are reasoned, not measured. Follow the manual playtest script in `docs/VERIFICATION.md` before publishing.
 - Monetization is disabled (no product IDs). Sound ids are placeholders (see "Audio").
 

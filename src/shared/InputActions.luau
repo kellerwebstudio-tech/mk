@@ -23,7 +23,6 @@ InputActions.Names = {
 	ToggleOrders = "DDC_ToggleOrders",
 	ToggleMenu = "DDC_ToggleMenu",
 	NextStop = "DDC_NextStop",
-	Horn = "DDC_Horn",
 }
 
 InputActions.Bindings = {
@@ -99,18 +98,11 @@ InputActions.Bindings = {
 		touchButton = false,
 		priority = 2000,
 	},
-	{
-		name = InputActions.Names.Horn,
-		title = "Bell",
-		description = "Ring your bell / horn",
-		keyboard = { Enum.KeyCode.H },
-		gamepad = { Enum.KeyCode.ButtonR3 },
-		touchButton = false,
-		priority = 2000,
-	},
 } :: { ActionBinding }
 
--- Glyphs for prompts per device family.
+-- Glyphs for prompts and the Settings controls reference per device family. An action without an
+-- affordance on a device has no entry (the reference skips it); touch entries name the on-screen
+-- control that triggers the action when it is not a ContextActionService button.
 InputActions.Glyphs = {
 	Keyboard = {
 		[InputActions.Names.Brake] = "Space",
@@ -121,7 +113,6 @@ InputActions.Glyphs = {
 		[InputActions.Names.ToggleOrders] = "Tab",
 		[InputActions.Names.ToggleMenu] = "M",
 		[InputActions.Names.NextStop] = "Q",
-		[InputActions.Names.Horn] = "H",
 	},
 	Gamepad = {
 		[InputActions.Names.Brake] = "LT",
@@ -132,18 +123,16 @@ InputActions.Glyphs = {
 		[InputActions.Names.ToggleOrders] = "D-Up",
 		[InputActions.Names.ToggleMenu] = "Start",
 		[InputActions.Names.NextStop] = "D-Right",
-		[InputActions.Names.Horn] = "R3",
 	},
 	Touch = {
 		[InputActions.Names.Brake] = "Tap",
 		[InputActions.Names.Interact] = "Tap",
 		[InputActions.Names.MountDismount] = "Tap",
 		[InputActions.Names.Recover] = "Menu",
-		[InputActions.Names.RecenterCamera] = "Menu",
+		[InputActions.Names.RecenterCamera] = "Settings",
 		[InputActions.Names.ToggleOrders] = "Tap",
 		[InputActions.Names.ToggleMenu] = "Tap",
-		[InputActions.Names.NextStop] = "Tap",
-		[InputActions.Names.Horn] = "Tap",
+		[InputActions.Names.NextStop] = "Deliveries",
 	},
 }
 

@@ -1,6 +1,6 @@
 --!nonstrict
 -- SettingsMenu: camera sensitivity, reduced motion, auto-recenter, invert Y, music/sfx volumes,
--- minimap toggle, a per-device controls reference and a Recover vehicle button. Changes go through
+-- minimap toggle, a per-device controls reference and Recover vehicle / Recenter camera buttons. Changes go through
 -- SettingsController.Set when present (it writes ClientState.settings at once and debounces
 -- SaveSettings); otherwise the menu writes ClientState.settings itself and debounces the remote.
 
@@ -90,9 +90,31 @@ local function recoverVehicle()
 	end)
 end
 
+-- Snaps the camera behind the vehicle (the RecenterCamera action has no touch binding).
+local function recenterCamera()
+	local camera = ctx and ctx.controllers and ctx.controllers.CameraController
+	if camera and type(camera.Recenter) == "function" then
+		pcall(camera.Recenter)
+		UIKit.notify(ctx, "Camera recentred.", "info", 2)
+	end
+end
+
 local function buildControls(parent: Instance)
 	UIKit.label(parent, "Controls", { name = "ControlsTitle", bold = true, size = UDim2.new(1, 0, 0, 26), maxSize = 20, layoutOrder = 50 })
 	controlsList = UIKit.column(parent, { name = "Controls", size = UDim2.new(1, 0, 0, #InputActions.Bindings * 26 + 4), gap = 2, layoutOrder = 51 })
+end
+
+-- Bindings that have an affordance on the device (a glyph in the device's own family; the
+-- keyboard fallback of UIKit.glyph would advertise keys a touch player cannot press).
+function SettingsMenu.ControlsFor(device: string): { any }
+	local family = InputActions.Glyphs[device] or InputActions.Glyphs.Keyboard
+	local result = {}
+	for _, binding in ipairs(InputActions.Bindings) do
+		if family[binding.name] ~= nil then
+			table.insert(result, binding)
+		end
+	end
+	return result
 end
 
 local function renderControls()
@@ -101,7 +123,9 @@ local function renderControls()
 	end
 	UIKit.clearChildren(controlsList)
 	local device = UIKit.device(ctx)
-	for index, binding in ipairs(InputActions.Bindings) do
+	local bindings = SettingsMenu.ControlsFor(device)
+	controlsList.Size = UDim2.new(1, 0, 0, #bindings * 26 + 4)
+	for index, binding in ipairs(bindings) do
 		local line = UIKit.statLine(controlsList, binding.title .. " - " .. binding.description, UIKit.glyph(binding.name, device), { name = "Control_" .. binding.name, layoutOrder = index, height = 24, bold = true })
 		line.key.Size = UDim2.new(0.75, 0, 1, 0)
 		line.value.Size = UDim2.new(0.25, -6, 1, 0)
@@ -163,8 +187,11 @@ function SettingsMenu.Mount(parent: Instance, context: any): Frame
 	local recoverRow = UIKit.row(list, { name = "RecoverRow", size = UDim2.new(1, 0, 0, UIKit.MIN_HIT), layoutOrder = 11 })
 	UIKit.label(recoverRow, "Stuck or fallen? Put your vehicle back on the road.", { size = UDim2.new(1, -190, 1, 0), layoutOrder = 1, maxSize = 16 })
 	UIKit.button(recoverRow, "Recover vehicle", recoverVehicle, { name = "RecoverButton", size = UDim2.new(0, 180, 0, UIKit.MIN_HIT), layoutOrder = 2 })
+	local recenterRow = UIKit.row(list, { name = "RecenterRow", size = UDim2.new(1, 0, 0, UIKit.MIN_HIT), layoutOrder = 12 })
+	UIKit.label(recenterRow, "Camera drifted? Put it back behind your vehicle.", { size = UDim2.new(1, -190, 1, 0), layoutOrder = 1, maxSize = 16 })
+	UIKit.button(recenterRow, "Recenter camera", recenterCamera, { name = "RecenterButton", size = UDim2.new(0, 180, 0, UIKit.MIN_HIT), layoutOrder = 2 })
 
-	UIKit.divider(list, { layoutOrder = 12 })
+	UIKit.divider(list, { layoutOrder = 13 })
 	buildControls(list)
 	return modal.frame
 end

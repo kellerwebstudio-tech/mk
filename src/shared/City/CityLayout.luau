@@ -773,7 +773,9 @@ local CityLayout = {
 			{ x = 10, z = 54, facing = { x = 0, z = -1 } },
 			{ x = 30, z = 54, facing = { x = 0, z = -1 } },
 		},
-		kiosk = { x = 0, z = 40 },
+		-- Just south of the Dash Hub Kiosk building's front wall (z = 46; the body spans z 34..46),
+		-- between the inner vehicle pads (x = +-10, footprints x 7..13 / z 48..60) facing the spawn.
+		kiosk = { x = 0, z = 48 },
 	},
 
 	depotPlots = depotPlots,

@@ -11,6 +11,7 @@ local Shared = ReplicatedStorage:WaitForChild("Shared")
 local TutorialController = {}
 
 TutorialController.DISMISSABLE = { [0] = true, [6] = true, [8] = true, [9] = true }
+TutorialController.FINAL_STEP = 9
 
 TutorialController.TEXTS = {
 	[0] = { title = "Welcome to Delivery Dash City", body = "You're a courier. Orders appear on your Dash app; pick them up at the business and ride them to the customer.", hint = "Tap Continue" },
@@ -29,17 +30,31 @@ local ctx = nil
 local currentStep: number? = nil
 local advancing = false
 local shownSpec = nil
+local lastStep: number? = nil -- last tutorial step seen this session (nil before the snapshot)
+local finalPending = false -- the step-9 card is up and has not been dismissed yet
 
 local function ui()
 	return ctx and ctx.controllers and ctx.controllers.UIController or nil
 end
 
--- Builds the banner spec for a tutorial state (nil when completed or absent).
-function TutorialController.SpecFor(tutorial: any)
-	if type(tutorial) ~= "table" or tutorial.completed then
+local function notify(text: string, kind: string)
+	local controller = ui()
+	if controller and type(controller.Notify) == "function" then
+		pcall(controller.Notify, text, kind, 3)
+	end
+end
+
+-- Builds the banner spec for a tutorial state (nil when completed or absent). The server sends
+-- step 9 ("You're ready") already flagged completed; `showFinal` lets the handler keep that one
+-- card up for a player who just finished (never for a returning, already-completed player).
+function TutorialController.SpecFor(tutorial: any, showFinal: boolean?)
+	if type(tutorial) ~= "table" then
 		return nil
 	end
 	local step = tonumber(tutorial.step) or 0
+	if tutorial.completed and not (showFinal and step == TutorialController.FINAL_STEP) then
+		return nil
+	end
 	local fallback = TutorialController.TEXTS[step] or TutorialController.TEXTS[0]
 	local hint = tutorial.hint
 	if type(hint) ~= "string" or hint == "" then
@@ -80,6 +95,12 @@ function TutorialController.Continue()
 		return
 	end
 	advancing = true
+	if step == TutorialController.FINAL_STEP then
+		-- The server acknowledges step 9 without sending another TutorialUpdated, so close locally.
+		finalPending = false
+		currentStep = nil
+		show(nil)
+	end
 	task.spawn(function()
 		local ok, result = pcall(function()
 			return ctx.remotes.getFunction("AdvanceTutorial"):InvokeServer(step)
@@ -88,7 +109,14 @@ function TutorialController.Continue()
 		if not ok then
 			warn("[TutorialController] AdvanceTutorial failed: " .. tostring(result))
 		elseif type(result) == "table" and result.ok == false then
-			warn("[TutorialController] AdvanceTutorial rejected: " .. tostring(result.message or result.error))
+			-- Tell the player instead of silently ignoring the click. Locked means the profile is
+			-- still loading (InteractionService); the banner is driven by the snapshot once it lands.
+			if result.error == "Locked" then
+				notify("Still loading your profile...", "warning")
+			else
+				warn("[TutorialController] AdvanceTutorial rejected: " .. tostring(result.message or result.error))
+				notify(tostring(result.message or "Could not continue the tutorial"), "warning")
+			end
 		end
 	end)
 end
@@ -99,7 +127,13 @@ end
 
 function TutorialController.Start()
 	ctx.state.onChange("tutorial", function(tutorial)
-		local spec = TutorialController.SpecFor(tutorial)
+		local step = type(tutorial) == "table" and tonumber(tutorial.step) or nil
+		-- Show the final card only on the in-session transition into step 9 (the profile update
+		-- and the TutorialUpdated event both carry step 9, so it stays up until dismissed).
+		local showFinal = step == TutorialController.FINAL_STEP and (finalPending or (lastStep ~= nil and lastStep < TutorialController.FINAL_STEP))
+		local spec = TutorialController.SpecFor(tutorial, showFinal)
+		finalPending = spec ~= nil and spec.step == TutorialController.FINAL_STEP
+		lastStep = step
 		currentStep = spec and spec.step or nil
 		show(spec)
 	end)

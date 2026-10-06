@@ -246,7 +246,7 @@ local function joinContract(contract: any)
 		if result.ok then
 			selectedOffers = {}
 			joinMessage = nil
-			UIKit.notify(ctx, "Joined the Lunch Rush. Deliver the batch before the deadline!", "success", 4)
+			-- (ContractService's "Lunch Rush joined: ..." Notify announces the join)
 		else
 			local message = tostring(result.message or result.error or "Could not join")
 			joinMessage = message

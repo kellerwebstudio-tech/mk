@@ -113,7 +113,10 @@ local function run(key: string, remoteName: string, argument: string, successTex
 		local result = UIKit.invoke(ctx, remoteName, argument)
 		busy[key] = nil
 		if result.ok then
-			UIKit.notify(ctx, successText, "success", 3)
+			-- Purchases are announced by ShopService's Notify; only equips toast locally.
+			if successText ~= "" then
+				UIKit.notify(ctx, successText, "success", 3)
+			end
 		else
 			UIKit.notify(ctx, tostring(result.message or result.error or "Request failed"), "error", 4)
 		end
@@ -236,7 +239,7 @@ local function buildVehicleCard(parent: Instance, def: any, index: number)
 		if entry.state == "Equip" then
 			run(vehicleKey(def), "EquipVehicle", def.id, def.displayName .. " equipped.")
 		elseif entry.state == "Buy" then
-			run(vehicleKey(def), "PurchaseVehicle", def.id, "You bought the " .. def.displayName .. "!")
+			run(vehicleKey(def), "PurchaseVehicle", def.id, "")
 		end
 	end, { name = "StateButton", size = UDim2.new(0, 130, 0, UIKit.MIN_HIT), layoutOrder = 1 })
 	entry.reason = UIKit.label(actions, "", { name = "ReasonLabel", color = UIKit.Theme.warning, size = UDim2.new(1, -160, 1, 0), layoutOrder = 2, maxSize = 15 })
@@ -355,7 +358,7 @@ local function buildCosmeticRow(parent: Instance, item: any, index: number, prof
 		end, { name = "StateButton", size = UDim2.new(0, 110, 0, UIKit.MIN_HIT), layoutOrder = 2 })
 	elseif state == "Buy" then
 		button = UIKit.primaryButton(actions, if busy[key] then "..." else "Buy", function()
-			run(key, "PurchaseCosmetic", item.id, "You bought " .. item.name .. "!")
+			run(key, "PurchaseCosmetic", item.id, "")
 		end, { name = "StateButton", size = UDim2.new(0, 110, 0, UIKit.MIN_HIT), layoutOrder = 2 })
 	else
 		button = UIKit.button(actions, if state == "StoreOnly" then "Store only" else "Locked", nil, { name = "StateButton", size = UDim2.new(0, 110, 0, UIKit.MIN_HIT), layoutOrder = 2 })

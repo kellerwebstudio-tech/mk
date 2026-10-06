@@ -475,6 +475,44 @@ describe("UIController", function()
 		expect(previous).toBe(500)
 	end)
 
+	it("HUD root is a plain Frame and the vehicle readout only redraws when its values change", function()
+		local HUD = requireClient("UI/HUD")
+		local refs = HUD.GetRefs()
+		-- A CanvasGroup root would re-rasterise the whole viewport on every speed-bar write.
+		expect(HUD.GetRoot().ClassName).toBe("Frame")
+		local panel = findDescendant(HUD.GetRoot(), "VehicleHud")
+		local writes = 0
+		refs.speedBar.frame:GetAttributeChangedSignal("Fraction"):Connect(function()
+			writes += 1
+		end)
+		UIController.SetVehicleHud({ state = "Driving", vehicleId = "Bicycle", speedFraction = 0.5, loadText = "1/2" })
+		expect(panel.Visible).toBe(true)
+		expect(refs.vehicleName.Text).toBe("Bicycle")
+		expect(refs.vehicleLoad.Text).toBe("Load 1/2")
+		expect(refs.speedBar.frame:GetAttribute("Fraction")).toBeCloseTo(0.5, 1e-6)
+		expect(writes).toBe(1)
+		-- sub-pixel speed changes (every Heartbeat while driving) are not written
+		UIController.SetVehicleHud({ state = "Driving", vehicleId = "Bicycle", speedFraction = 0.5004, loadText = "1/2" })
+		UIController.SetVehicleHud({ state = "Driving", vehicleId = "Bicycle", speedFraction = 0.5, loadText = "1/2" })
+		expect(writes).toBe(1)
+		UIController.SetVehicleHud({ state = "Driving", vehicleId = "Bicycle", speedFraction = 0.75, loadText = "1/2" })
+		expect(writes).toBe(2)
+		expect(refs.speedBar.frame:GetAttribute("Fraction")).toBeCloseTo(0.75, 1e-6)
+		-- hiding and showing again rewrites
+		UIController.SetVehicleHud({ state = "Parked" })
+		expect(panel.Visible).toBe(false)
+		UIController.SetVehicleHud({ state = "Driving", vehicleId = "Bicycle", speedFraction = 0.25, loadText = "2/2" })
+		expect(panel.Visible).toBe(true)
+		expect(refs.vehicleLoad.Text).toBe("Load 2/2")
+		expect(refs.speedBar.frame:GetAttribute("Fraction")).toBeCloseTo(0.25, 1e-6)
+		expect(writes).toBe(3)
+		-- modal dim is the DDC_Menus scrim; the HUD just records the state
+		HUD.SetDimmed(true)
+		expect(HUD.IsDimmed()).toBe(true)
+		HUD.SetDimmed(false)
+		expect(HUD.IsDimmed()).toBe(false)
+	end)
+
 	it("ToggleOrders / ToggleMenu actions from InputController toggle the screens", function()
 		local Signal = shim.requirePath("ReplicatedStorage/Shared/Util/Signal")
 		local pressed = Signal.new()
@@ -572,6 +610,12 @@ describe("UIController", function()
 		expect(findDescendant(frame, "Player").Position).toEqual(UDim2.fromOffset(70, 70))
 		UIController.SetMinimap({ playerPosition = v3(100, 0, -50), heading = 0, stops = {} })
 		expect(frame.World.Position.X.Offset).toBeCloseTo(35, 1e-6)
+		-- the vehicle readout leaves the bottom-right corner (jump button + CAS cluster) as well
+		local HUD = requireClient("UI/HUD")
+		local readout = findDescendant(HUD.GetRoot(), "VehicleHud")
+		expect(readout.AnchorPoint).toEqual(Vector2.new(1, 1))
+		expect(readout.Position.Y.Offset).toBe(-HUD.VEHICLE_HUD_TOUCH_BOTTOM)
+		expect(HUD.VEHICLE_HUD_TOUCH_BOTTOM).toBeGreaterThanOrEqual(140)
 		-- back to keyboard restores the bottom-left layout
 		state.set("device", "Keyboard")
 		task.wait()
@@ -580,6 +624,7 @@ describe("UIController", function()
 		expect(frame.AnchorPoint).toEqual(Vector2.new(0, 1))
 		expect(frame.BackgroundTransparency).toBe(0)
 		expect(findDescendant(frame, "Player").Position).toEqual(UDim2.fromOffset(90, 90))
+		expect(readout.Position).toEqual(UDim2.new(1, -8, 1, -8))
 	end)
 
 	it("narrows the toast column on phone viewports so it never crosses the top-centre stack", function()
@@ -1038,7 +1083,7 @@ describe("DepotMenu", function()
 	end
 
 	it("renders requirements and a disabled Buy Depot button when not owned", function()
-		mount({ profile = makeProfile({ cash = 5000, reputation = 1200 }), depot = { owned = false, slotsUnlocked = 0, drivers = {}, pendingTotal = 0, categories = {}, serverTime = os.clock(), publicPlots = { { plotId = "PlotA", ownerName = "Zed", ownerUserId = 5, drivers = { { hired = true } } }, { plotId = "PlotB", ownerName = "", ownerUserId = 0, drivers = {} } } } })
+		mount({ profile = makeProfile({ cash = 5000, reputation = 1200 }), depot = { owned = false, slotsUnlocked = 0, drivers = {}, pendingTotal = 0, categories = {}, serverTime = os.clock(), publicPlots = { { plotId = "PlotA", ownerName = "Zed", ownerUserId = 5, drivers = 2 }, { plotId = "PlotB", ownerName = "", ownerUserId = 0, drivers = 0 }, { plotId = "PlotC", ownerName = "Old", ownerUserId = 6, drivers = { { hired = true } } } } } })
 		local list = DepotMenu.GetList()
 		expect(findDescendant(list, "Purchase")).never.toBeNil()
 		expect(findDescendant(list, "Requirements").Text).toBe("Requirements: $12,000 and 1,000 Rep")
@@ -1047,8 +1092,10 @@ describe("DepotMenu", function()
 		expect(buy:GetAttribute("Disabled")).toBe(true)
 		expect(findDescendant(list, "ReasonLabel").Text).toBe("Not enough cash: $7,000 more")
 		expect(findDescendant(list, "PublicTitle")).never.toBeNil()
-		expect(findDescendant(list, "Plot_PlotA").Text).toBe("Plot PlotA  -  Zed  -  1 driver")
+		-- the wire shape is a hired-slot count (DepotService.GetPublicPlots); a slot array still works
+		expect(findDescendant(list, "Plot_PlotA").Text).toBe("Plot PlotA  -  Zed  -  2 drivers")
 		expect(findDescendant(list, "Plot_PlotB").Text).toBe("Plot PlotB  -  for sale")
+		expect(findDescendant(list, "Plot_PlotC").Text).toBe("Plot PlotC  -  Old  -  1 driver")
 		state.set("profile", makeProfile({ cash = 20000, reputation = 1200 }))
 		DepotMenu.Update()
 		expect(findDescendant(DepotMenu.GetList(), "BuyDepotButton"):GetAttribute("Disabled")).toBe(false)
@@ -1143,5 +1190,48 @@ describe("SettingsMenu", function()
 		expect(saved[1].cameraSensitivity).toBeCloseTo(1.1, 1e-6)
 		-- controls reference uses the device glyphs
 		expect(findDescendant(SettingsMenu.GetFrame(), "Control_DDC_Interact").Value.Text).toBe("E")
+	end)
+
+	it("gives every keyboard / gamepad key to one action and lists only controls the device has", function()
+		local InputActions = shim.requirePath("ReplicatedStorage/Shared/InputActions")
+		-- ContextActionService hands a key to the most recently bound action at equal priority,
+		-- which sinks it; a shared key therefore silently disables the earlier binding (R3 once
+		-- went to an unimplemented Horn instead of RecenterCamera).
+		local owners = {}
+		for _, binding in ipairs(InputActions.Bindings) do
+			for _, family in ipairs({ "keyboard", "gamepad" }) do
+				for _, key in ipairs(binding[family]) do
+					local id = family .. ":" .. key.Name
+					expect(owners[id]).toBeNil()
+					owners[id] = binding.name
+				end
+			end
+		end
+		expect(owners["gamepad:ButtonR3"]).toBe(InputActions.Names.RecenterCamera)
+		expect(InputActions.Names.Horn).toBeNil()
+
+		setupClient()
+		local state = makeFakeState({ profile = makeProfile(), settings = { cameraSensitivity = 1 }, device = "Touch" })
+		local recentered = 0
+		local ctx = makeCtx(state, { controllers = { CameraController = { Recenter = function() recentered += 1 end } } })
+		local SettingsMenu = requireClient("UI/SettingsMenu")
+		local gui = Instance.new("ScreenGui")
+		gui.Parent = game:GetService("Players").LocalPlayer.PlayerGui
+		SettingsMenu.Mount(gui, ctx)
+		SettingsMenu.Update()
+		local frame = SettingsMenu.GetFrame()
+		-- Touch rows name the on-screen control that triggers the action ("Tap" = a CAS or HUD
+		-- button); NextStop / RecenterCamera have no button, so they point at the screen instead.
+		local touchBindings = SettingsMenu.ControlsFor("Touch")
+		expect(#touchBindings).toBeGreaterThan(0)
+		for _, binding in ipairs(touchBindings) do
+			expect(InputActions.Glyphs.Touch[binding.name]).toBeA("string")
+		end
+		expect(findDescendant(frame, "Control_DDC_NextStop").Value.Text).toBe("Deliveries")
+		expect(findDescendant(frame, "Control_DDC_RecenterCamera").Value.Text).toBe("Settings")
+		expect(findDescendant(frame, "Control_DDC_NextStop").Parent.Size.Y.Offset).toBe(#touchBindings * 26 + 4)
+		-- ...and Settings really has the recenter affordance the glyph points at.
+		findDescendant(frame, "RecenterButton").Activated:Fire()
+		expect(recentered).toBe(1)
 	end)
 end)

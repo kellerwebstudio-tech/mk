@@ -20,6 +20,7 @@ local LAYOUT = {
 	neighborhoods = {
 		{ id = "Downtown", name = "Downtown", center = { x = 0, z = -100 }, bounds = { minX = -600, maxX = 600, minZ = -600, maxZ = 100 }, accent = { r = 1, g = 0.5, b = 0.2 } },
 		{ id = "Residential", name = "Maple Hill", center = { x = 0, z = 300 }, bounds = { minX = -600, maxX = 600, minZ = 100, maxZ = 600 }, accent = { r = 0.4, g = 0.8, b = 0.4 } },
+		{ id = "Industrial", name = "Docks", center = { x = -300, z = -300 }, bounds = { minX = -600, maxX = -200, minZ = -600, maxZ = -200 }, accent = { r = 0.5, g = 0.5, b = 0.6 } },
 	},
 	roads = {
 		{ id = "Main", name = "Main Street", kind = "Road", width = 12, points = { { x = -500, z = 0 }, { x = 500, z = 0 } } },
@@ -32,6 +33,7 @@ local LAYOUT = {
 		{ id = "SliceStreetPizza", neighborhood = "Downtown", door = { x = -20, z = -14 }, facing = { x = 0, z = 1 }, pickupPoint = { x = -20, z = -9 }, arrivalPoint = { x = -20, z = -5 } },
 		{ id = "BeanAndBunCafe", neighborhood = "Downtown", door = { x = 60, z = 14 }, facing = { x = 0, z = -1 }, pickupPoint = { x = 60, z = 9 }, arrivalPoint = { x = 60, z = 5 } },
 		{ id = "FreshLaneMarket", neighborhood = "Residential", door = { x = 40, z = 214 }, facing = { x = 0, z = -1 }, pickupPoint = { x = 40, z = 209 }, arrivalPoint = { x = 40, z = 205 } },
+		{ id = "CrateAndCoSupply", neighborhood = "Industrial", door = { x = -300, z = -14 }, facing = { x = 0, z = 1 }, pickupPoint = { x = -300, z = -9 }, arrivalPoint = { x = -300, z = -5 } },
 	},
 	destinations = {
 		{ id = "D1", address = "1 Main Street", neighborhood = "Downtown", kind = "House", door = { x = 120, z = -12 }, facing = { x = 0, z = 1 }, arrivalPoint = { x = 120, z = -5 } },
@@ -44,6 +46,13 @@ local LAYOUT = {
 		{ id = "R3", address = "3 Hill Road", neighborhood = "Residential", kind = "House", door = { x = 12, z = 280 }, facing = { x = -1, z = 0 }, arrivalPoint = { x = 5, z = 280 } },
 		{ id = "R4", address = "4 Hill Road", neighborhood = "Residential", kind = "House", door = { x = 12, z = 340 }, facing = { x = -1, z = 0 }, arrivalPoint = { x = 5, z = 340 } },
 		{ id = "R5", address = "5 Hill Road", neighborhood = "Residential", kind = "House", door = { x = 12, z = 400 }, facing = { x = -1, z = 0 }, arrivalPoint = { x = 5, z = 400 } },
+		-- Industrial: loading bays (Medium/Large only) plus one shop and one house. Only businesses whose
+		-- deliveryProfile allows the neighbourhood/kind may be offered there (FreshLaneMarket is listed
+		-- for Industrial in ContractDefinitions but its profile excludes it).
+		{ id = "I1", address = "1 Dock Road", neighborhood = "Industrial", kind = "LoadingBay", door = { x = -360, z = -12 }, facing = { x = 0, z = 1 }, arrivalPoint = { x = -360, z = -5 } },
+		{ id = "I2", address = "2 Dock Road", neighborhood = "Industrial", kind = "LoadingBay", door = { x = -420, z = -12 }, facing = { x = 0, z = 1 }, arrivalPoint = { x = -420, z = -5 } },
+		{ id = "I3", address = "3 Dock Road", neighborhood = "Industrial", kind = "Shop", door = { x = -480, z = -12 }, facing = { x = 0, z = 1 }, arrivalPoint = { x = -480, z = -5 } },
+		{ id = "I4", address = "4 Dock Road", neighborhood = "Industrial", kind = "House", door = { x = -240, z = -12 }, facing = { x = 0, z = 1 }, arrivalPoint = { x = -240, z = -5 } },
 	},
 	landmarks = {},
 	hub = { spawn = { x = 0, z = 30, facing = { x = 0, z = -1 } }, vehiclePads = { { x = 10, z = 30, facing = { x = 0, z = -1 } } }, kiosk = { x = 0, z = 40 } },
@@ -719,6 +728,71 @@ describe("ContractService", function()
 		end
 	end)
 
+	it("offers only pair a destination with a business whose delivery profile serves it", function()
+		-- Tycoon: everything unlocked (FreshLaneMarket 120 rep, CrateAndCoSupply 500 rep), Van capacity.
+		local tycoon = joinPlayer(env, "Tycoon", 104, { tutorial = { completed = true, step = 9 }, reputation = 1000, stats = { deliveries = 50 }, ownedVehicles = { Bicycle = true, Van = true } })
+		env.contracts.ForceOpen("Industrial")
+		expect(env.contracts.GetCycle().neighborhood).toBe("Industrial")
+		local offers = env.contracts.GetStateFor(tycoon).offers
+		expect(offers).toBeTruthy()
+		-- I4 (House) has no serving business: FreshLaneMarket serves houses but not Industrial, and
+		-- CrateAndCoSupply serves Industrial but only LoadingBay/Warehouse/Shop. So 3 offers, not 4.
+		expect(#offers).toBe(3)
+		local seen = {}
+		for _, order in ipairs(offers) do
+			expect(order.businessId).toBe("CrateAndCoSupply")
+			seen[order.destinationId] = true
+			if order.destinationId ~= "I3" then
+				expect(order.size).toBe("Medium") -- loading bays never take Small
+			end
+		end
+		expect(seen.I4).toBeNil()
+		expect(seen.I1 and seen.I2 and seen.I3).toBe(true)
+
+		-- Residential rush for the same player: FreshLaneMarket and SliceStreetPizza both serve houses.
+		shim.advance(env.def.window + env.def.grace + 2, 1)
+		env.contracts.ForceOpen("Residential")
+		local residential = env.contracts.GetStateFor(tycoon).offers
+		expect(#residential).toBe(5)
+		for _, order in ipairs(residential) do
+			expect(order.businessId == "SliceStreetPizza" or order.businessId == "FreshLaneMarket").toBe(true)
+			expect(string.sub(order.destinationId, 1, 1)).toBe("R")
+		end
+	end)
+
+	it("Join accepts through OrderService with viaContract and an accepted offer leaves the offer list", function()
+		local alice = joinPlayer(env, "Alice", 101, ELIGIBLE_VAN)
+		local acceptOpts = {}
+		local realAccept = env.orders.Accept
+		env.orders.Accept = function(player, orderId, opts)
+			table.insert(acceptOpts, opts)
+			return realAccept(player, orderId, opts)
+		end
+		env.contracts.ForceOpen()
+		local cycle = env.contracts.GetCycle()
+		local offerIds = ids(env.contracts.GetStateFor(alice).offers)
+		expect(env.contracts.Join(alice, cycle.id, { offerIds[1], offerIds[2] }).ok).toBe(true)
+		expect(#acceptOpts).toBe(2)
+		for _, opts in ipairs(acceptOpts) do
+			expect(opts.viaContract).toBe(true)
+		end
+		expect(#env.contracts.GetStateFor(alice).offers).toBe(3)
+
+		-- Defensive: an offer accepted by any other path (the stub does not gate) is dropped from the
+		-- offers so GetStateFor never advertises a non-Available order.
+		local bob = joinPlayer(env, "Bob", 105, ELIGIBLE_VAN)
+		local bobOffers = ids(env.contracts.GetStateFor(bob).offers)
+		expect(#bobOffers).toBe(5)
+		expect(realAccept(bob, bobOffers[1]).ok).toBe(true)
+		shim.step()
+		local remaining = env.contracts.GetStateFor(bob).offers
+		expect(#remaining).toBe(4)
+		for _, order in ipairs(remaining) do
+			expect(order.id).never.toBe(bobOffers[1])
+			expect(order.state).toBe("Available")
+		end
+	end)
+
 	it("Join validates batch size, ownership, duplicates, capacity and state", function()
 		local alice = joinPlayer(env, "Alice", 101, ELIGIBLE_VAN)
 		local bike = joinPlayer(env, "Bikey", 103, ELIGIBLE_BIKE)
@@ -1031,6 +1105,45 @@ describe("DepotService", function()
 		expect(env.depot.GetPlotId(alice)).toBeNil()
 		expect(env.world.depotPlots.P1.model:GetAttribute("OwnerUserId")).toBe(0)
 		expect(#env.builder.calls.clear).toBe(1)
+		expect(#shim.warnings).toBe(0)
+	end)
+
+	it("equipping a depot cosmetic through ShopService re-applies the depot visuals at once", function()
+		local alice = joinPlayer(env, "Alice", 101, hiredOwner({ reputation = 1000 }))
+		expect(env.depot.GetPlotId(alice)).toBe("P1")
+		expect(#env.builder.calls.apply).toBe(1)
+		local servicesFolder = game:GetService("ServerScriptService"):WaitForChild("DeliveryDash"):WaitForChild("Services")
+		local Shop = require(servicesFolder:WaitForChild("ShopService"))
+		env.ctx.services.ShopService = Shop
+		Shop.Init(env.ctx)
+
+		expect(Shop.EquipCosmetic(alice, "DepotSign_Bold").error).toBe("Locked") -- not owned: no rebuild
+		expect(#env.builder.calls.apply).toBe(1)
+		env.data.Update(alice, function(profile)
+			profile.cosmetics.owned.DepotSign_Bold = true
+			profile.cosmetics.owned.DepotDecor_Planters = true
+		end)
+		expect(Shop.EquipCosmetic(alice, "DepotSign_Bold").ok).toBe(true)
+		expect(env.data.GetProfile(alice).cosmetics.equipped.DepotSign).toBe("DepotSign_Bold")
+		expect(#env.builder.calls.apply).toBe(2)
+		expect(env.builder.calls.apply[2].plotId).toBe("P1")
+		expect(Shop.EquipCosmetic(alice, "DepotDecor_Planters").ok).toBe(true)
+		expect(#env.builder.calls.apply).toBe(3)
+		-- The real builder (when bundled) recolours the plot sign with the Bold data.
+		local CosmeticDefinitions = require(ReplicatedStorageRef:WaitForChild("Shared").Definitions.CosmeticDefinitions)
+		local bold = CosmeticDefinitions.get("DepotSign_Bold").data.color
+		local sign = env.world.depotPlots.P1.signPart
+		local built = env.world.depotPlots.P1.model:FindFirstChild("Built")
+		if built and #built:GetChildren() > 0 then
+			expect(sign.Color).toEqual(Color3.fromRGB(bold[1], bold[2], bold[3]))
+		end
+		-- A player without a plot: EquipCosmetic still succeeds and nothing is rebuilt.
+		local bob = joinPlayer(env, "Bob", 102, { reputation = 1000 })
+		env.data.Update(bob, function(profile)
+			profile.cosmetics.owned.DepotSign_Bold = true
+		end)
+		expect(Shop.EquipCosmetic(bob, "DepotSign_Bold").ok).toBe(true)
+		expect(#env.builder.calls.apply).toBe(3)
 		expect(#shim.warnings).toBe(0)
 	end)
 

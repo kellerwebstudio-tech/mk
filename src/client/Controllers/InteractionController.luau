@@ -18,7 +18,7 @@ local InteractionController = {}
 
 InteractionController.SCAN_INTERVAL = 0.15
 InteractionController.PROMPT_MARGIN = 2 -- prompts appear this much inside the server distance
-InteractionController.KIOSK_DISTANCE = 12
+InteractionController.KIOSK_DISTANCE = 6 -- the kiosk stands 7 studs from the nearest hub pad edge
 InteractionController.PAD_SPAWN_DISTANCE = 20
 InteractionController.DISMOUNT_MAX_SPEED = 2
 
@@ -127,9 +127,20 @@ local function ownVehicleChassis(): BasePart?
 	return nil
 end
 
-local function vehicleCandidate(position: Vector3)
+-- The vehicle record while the server reports a live vehicle; nil for no vehicle. The bootstrap
+-- already normalises the terminal "Despawning" event to nil, this keeps the controller correct
+-- if the raw state is ever stored (mirrors VehicleController.hasLiveVehicle / UIController).
+local function liveVehicle()
 	local vehicle = ctx.state.get("vehicle")
-	if not vehicle or not vehicle.state then
+	if not vehicle or not vehicle.state or vehicle.state == "Despawning" then
+		return nil
+	end
+	return vehicle
+end
+
+local function vehicleCandidate(position: Vector3)
+	local vehicle = liveVehicle()
+	if not vehicle then
 		return nil
 	end
 	if vehicle.state == "Parked" then
@@ -210,8 +221,7 @@ local function nearVehiclePad(position: Vector3): boolean
 end
 
 local function spawnCandidate(position: Vector3)
-	local vehicle = ctx.state.get("vehicle")
-	if vehicle and vehicle.state then
+	if liveVehicle() then
 		return nil
 	end
 	local profile = ctx.state.get("profile")
@@ -367,7 +377,7 @@ local function onMountDismount()
 	if busy then
 		return
 	end
-	local vehicle = ctx.state.get("vehicle")
+	local vehicle = liveVehicle()
 	local position = playerPosition()
 	if not position then
 		return

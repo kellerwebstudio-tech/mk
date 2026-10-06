@@ -97,11 +97,10 @@ local function run(key: string, remoteName: string, successText: string, onFail:
 		local result = UIKit.invoke(ctx, remoteName, table.unpack(args, 1, args.n))
 		busy[key] = nil
 		if result.ok then
+			-- DepotService notifies every successful purchase / unlock / hire / assign / collect
+			-- itself; a successText here is only for actions the server stays silent about.
 			if successText ~= "" then
 				UIKit.notify(ctx, successText, "success", 3)
-			end
-			if remoteName == "CollectDepotEarnings" and type(result.collected) == "number" then
-				UIKit.notify(ctx, string.format("Collected %s from your drivers.", UIKit.formatCash(result.collected)), "success", 4)
 			end
 		else
 			if onFail then
@@ -126,7 +125,7 @@ local function renderNotOwned(profile: any)
 	local actions = UIKit.row(card, { name = "Actions", size = UDim2.new(1, 0, 0, UIKit.MIN_HIT), layoutOrder = 5 })
 	local reason = DepotMenu.PurchaseReason(profile)
 	local button = UIKit.primaryButton(actions, if busy.purchase then "..." else "Buy Depot", function()
-		run("purchase", "PurchaseDepot", "You own a depot! Visit your plot to meet your drivers.")
+		run("purchase", "PurchaseDepot", "")
 	end, { name = "BuyDepotButton", size = UDim2.new(0, 160, 0, UIKit.MIN_HIT), layoutOrder = 1 })
 	if reason or busy.purchase then
 		UIKit.setButtonEnabled(button, false)
@@ -168,7 +167,7 @@ local function renderSlot(depot: any, slotIndex: number, order: number)
 	if status == "Locked" then
 		UIKit.label(card, string.format("Unlock a second driver for %s.", UIKit.formatCash(DepotDefinitions.slot2Cost)), { name = "Detail", color = UIKit.Theme.textDim, size = UDim2.new(1, 0, 0, 20), maxSize = 15, layoutOrder = 2 })
 		local button = UIKit.primaryButton(card, if busy.unlock then "..." else string.format("Unlock slot %d (%s)", slotIndex, UIKit.formatCash(DepotDefinitions.slot2Cost)), function()
-			run("unlock", "UnlockDriverSlot", "Second driver slot unlocked.")
+			run("unlock", "UnlockDriverSlot", "")
 		end, { name = "UnlockButton", size = UDim2.new(0, 230, 0, UIKit.MIN_HIT), layoutOrder = 3 })
 		if busy.unlock then
 			UIKit.setButtonEnabled(button, false)
@@ -180,7 +179,7 @@ local function renderSlot(depot: any, slotIndex: number, order: number)
 		UIKit.label(card, string.format("No driver yet. Hire one for %s.", UIKit.formatCash(DepotDefinitions.hireCost)), { name = "Detail", color = UIKit.Theme.textDim, size = UDim2.new(1, 0, 0, 20), maxSize = 15, layoutOrder = 2 })
 		local key = "hire" .. slotIndex
 		local button = UIKit.primaryButton(card, if busy[key] then "..." else string.format("Hire for %s", UIKit.formatCash(DepotDefinitions.hireCost)), function()
-			run(key, "HireDriver", "Driver hired!", nil, slotIndex)
+			run(key, "HireDriver", "", nil, slotIndex)
 		end, { name = "HireButton", size = UDim2.new(0, 200, 0, UIKit.MIN_HIT), layoutOrder = 3 })
 		if busy[key] then
 			UIKit.setButtonEnabled(button, false)
@@ -220,7 +219,7 @@ local function renderSlot(depot: any, slotIndex: number, order: number)
 		reason = tostring(category.requirement or "Category locked")
 	end
 	local assign = UIKit.primaryButton(actions, if busy[key] then "..." else (if category then string.format("Assign (%s)", UIKit.formatCash(category.cost)) else "Assign"), function()
-		run(key, "AssignDriver", name .. " is on the road.", nil, slotIndex, selectedCategory)
+		run(key, "AssignDriver", "", nil, slotIndex, selectedCategory)
 	end, { name = "AssignButton", size = UDim2.new(0, 170, 0, UIKit.MIN_HIT), layoutOrder = 1 })
 	if reason or busy[key] then
 		UIKit.setButtonEnabled(assign, false)
@@ -274,8 +273,11 @@ local function renderPublicPlots(depot: any, order: number)
 	for _, plot in ipairs(plots) do
 		order += 1
 		local owned = (tonumber(plot.ownerUserId) or 0) ~= 0
-		local hired = 0
+		-- DepotService sends `drivers` as the hired-slot count (ARCHITECTURE section 12); a slot
+		-- array is tolerated for older payloads.
+		local hired = tonumber(plot.drivers) or 0
 		if type(plot.drivers) == "table" then
+			hired = 0
 			for _, slot in ipairs(plot.drivers) do
 				if type(slot) == "table" and slot.hired then
 					hired += 1

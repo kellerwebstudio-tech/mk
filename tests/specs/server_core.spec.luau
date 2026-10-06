@@ -150,11 +150,14 @@ local function makeCityService(layout, world, RouteGraph)
 		local point, _, _, distance = RouteGraph.nearestPointOnGraph(ctxRef.graph, position, mask)
 		return point, distance
 	end
-	function CityService.GetSafeRespawnCFrame(position, mask)
+	-- 5.3: raised by `raise` studs (default RESPAWN_HEIGHT = 3); VehicleService passes the ride height.
+	CityService.RESPAWN_HEIGHT = 3
+	function CityService.GetSafeRespawnCFrame(position, mask, raise)
 		local graph = ctxRef.graph
 		local point, edge = RouteGraph.nearestPointOnGraph(graph, position, mask)
 		local dir = graph.nodes[edge.b].position - graph.nodes[edge.a].position
-		return CFrame.lookAlong(point + v3(0, 1.5, 0), dir.Unit)
+		local height = if type(raise) == "number" then raise else CityService.RESPAWN_HEIGHT
+		return CFrame.lookAlong(point + v3(0, height, 0), dir.Unit)
 	end
 	function CityService.GetHubSpawn()
 		return world.hubSpawn
@@ -434,6 +437,28 @@ describe("PlayerDataService", function()
 		expect(storedProfile(106).lock).toBeNil()
 	end)
 
+	it("BindToClose waits for a leave-save that is already in flight", function()
+		local player = joinPlayer(env, "Ivy", 109)
+		env.services.PlayerDataService.AddCash(player, 77, "test")
+		-- The leave-save's first UpdateAsync fails, so it sits in its 1 s retry backoff when the
+		-- server starts closing; the session is already out of the service's session table.
+		shim.datastore.failNextCalls = 1
+		shim.removePlayer(player)
+		shim.step()
+		expect(storedProfile(109).cash).toBeNil()
+		local done = false
+		task.spawn(function()
+			shim.boundToClose[1]()
+			done = true
+		end)
+		shim.advance(0.5)
+		expect(done).toBe(false) -- still waiting on the retry
+		shim.advance(1)
+		expect(done).toBe(true)
+		expect(storedProfile(109).cash).toBe(77)
+		expect(storedProfile(109).lock).toBeNil()
+	end)
+
 	it("saves on leave and releases the lock", function()
 		local player = joinPlayer(env, "Gus", 107)
 		local unloading = nil
@@ -649,6 +674,24 @@ describe("OrderService", function()
 		local second = pizzaOrder(env, player, { destinationId = "D_Alley" })
 		expect(Orders.Accept(player, second.id).error).toBe("Locked")
 		expect(#Orders.GetActive(player)).toBe(1)
+	end)
+
+	it("refuses direct accepts of contract offers unless viaContract", function()
+		local Orders = env.services.OrderService
+		local player = joinPlayer(env, "Rusher", 303, COMPLETED_TUTORIAL)
+		local offer = pizzaOrder(env, player, { contractId = "LunchRush-1", timeLimit = 420 })
+		local direct = Orders.Accept(player, offer.id)
+		expect(direct.ok).toBe(false)
+		expect(direct.error).toBe("Locked")
+		expect(offer.state).toBe("Available")
+		expect(#Orders.GetActive(player)).toBe(0)
+		expect(Orders.Accept(player, offer.id, { viaContract = false }).error).toBe("Locked")
+		expect(Orders.Accept(player, offer.id, { viaContract = true }).ok).toBe(true)
+		expect(offer.state).toBe("ReadyForPickup")
+		-- Normal orders are unaffected by the opts (multi-order is locked, so free the slot first).
+		expect(Orders.Cancel(player, offer.id, { silent = true, noPenalty = true }).ok).toBe(true)
+		local normal = pizzaOrder(env, player, { destinationId = "D_Mid" })
+		expect(Orders.Accept(player, normal.id).ok).toBe(true)
 	end)
 
 	it("moves Accepted orders to ReadyForPickup after the prep time", function()
@@ -972,6 +1015,51 @@ describe("VehicleService", function()
 		expect(states[5]).toBe("Parked")
 	end)
 
+	it("parks the chassis at the road surface plus ride height on Spawn and on a Parked recover", function()
+		-- Test roads lie at y = 0; the stub CityService raises by the `raise` argument (default 3).
+		expect(Vehicles.Spawn(player, "Bicycle").ok).toBe(true)
+		local bike = Vehicles.GetVehicle(player)
+		expect(bike.chassis.Anchored).toBe(true)
+		expect(bike.chassis.Position.Y).toBeCloseTo(1.5, 1e-3)
+		bike.model:PivotTo(CFrame.new(bike.chassis.Position + v3(0, 20, 0)))
+		expect(Vehicles.Recover(player).ok).toBe(true)
+		expect(Vehicles.GetState(player)).toBe("Parked")
+		expect(bike.chassis.Position.Y).toBeCloseTo(1.5, 1e-3)
+
+		local vanOwner = joinPlayer(env, "Vanner", 403, { schemaVersion = 1, tutorial = { completed = true, step = 9 }, ownedVehicles = { Bicycle = true, Van = true } })
+		expect(Vehicles.Spawn(vanOwner, "Van").ok).toBe(true)
+		local van = Vehicles.GetVehicle(vanOwner)
+		expect(van.chassis.Position.Y).toBeCloseTo(2.4, 1e-3)
+	end)
+
+	it("keeps the AlignOrientation target on the chassis heading after Spawn, Recover and at Mount", function()
+		expect(Vehicles.Spawn(player, "Bicycle").ok).toBe(true)
+		local record = Vehicles.GetVehicle(player)
+		local align = record.chassis:FindFirstChild("Align")
+		expect(align).toBeTruthy()
+		local function expectAligned()
+			expect(align.CFrame.LookVector).toBeCloseTo(record.chassis.CFrame.LookVector, 1e-6)
+			expect(align.CFrame.Position).toEqual(Vector3.zero)
+		end
+		-- The builder writes the target at identity; Spawn pivots to the road heading and re-syncs.
+		expectAligned()
+
+		-- Park facing +X behind the service's back: the target is stale until the next service pivot.
+		record.model:PivotTo(CFrame.lookAlong(record.chassis.Position, v3(1, 0, 0)))
+		expect(align.CFrame.LookVector.X).toBeLessThan(0.5)
+		expect(Vehicles.Recover(player).ok).toBe(true)
+		expectAligned()
+
+		-- Mount refreshes the target before the chassis is unanchored (the server simulates it
+		-- until ownership passes to the rider), so the parked heading is what the constraint holds.
+		record.model:PivotTo(CFrame.lookAlong(record.chassis.Position, v3(0, 0, 1)))
+		moveTo(player, record.chassis.Position + v3(3, 0, 0))
+		expect(Vehicles.Mount(player).ok).toBe(true)
+		expect(record.chassis.Anchored).toBe(false)
+		expectAligned()
+		expect(align.CFrame.LookVector).toBeCloseTo(v3(0, 0, 1), 1e-6)
+	end)
+
 	it("requires ownership and a known vehicle", function()
 		expect(Vehicles.Spawn(player, "Scooter").error).toBe("Locked")
 		expect(Vehicles.Spawn(player, "Nope").error).toBe("NotFound")
@@ -1120,6 +1208,51 @@ describe("AntiCheatService", function()
 		expect(AntiCheat.CheckPosition(player)).toBe(true)
 	end)
 
+	it("is not reset by spawning a vehicle or recovering a parked one", function()
+		local Vehicles = env.services.VehicleService
+		local root = player.Character.HumanoidRootPart
+		-- A legitimate ride first: the dismount is a server move (1 s window), after which the
+		-- sampler is live again.
+		expect(Vehicles.Spawn(player, "Bicycle").ok).toBe(true)
+		moveTo(player, Vehicles.GetVehicle(player).chassis.Position + v3(2, 0, 0))
+		shim.advance(1.1)
+		expect(Vehicles.Mount(player).ok).toBe(true)
+		expect(Vehicles.Dismount(player).ok).toBe(true)
+		shim.advance(1.5) -- past the dismount window
+		expect(AntiCheat.GetStrikes(player)).toBe(0)
+
+		-- Exploit shape: teleport, then SpawnVehicle to wipe the sampler before the next sample.
+		moveTo(player, root.Position + v3(1000, 0, 0))
+		expect(Vehicles.Spawn(player, "Bicycle").ok).toBe(true)
+		shim.advance(1.1)
+		expect(AntiCheat.GetStrikes(player)).toBe(1)
+		expect(AntiCheat.CheckPosition(player)).toBe(false)
+		shim.advance(4.5)
+		expect(AntiCheat.CheckPosition(player)).toBe(true)
+
+		-- Recovering a Parked vehicle moves only the vehicle; the character sampler is untouched.
+		moveTo(player, root.Position + v3(1000, 0, 0))
+		expect(Vehicles.GetState(player)).toBe("Parked")
+		expect(Vehicles.Recover(player).ok).toBe(true)
+		shim.advance(1.1)
+		expect(AntiCheat.GetStrikes(player)).toBe(2)
+	end)
+
+	it("NotePlausibleTeleport keeps the server-chosen destination as the reference point", function()
+		local root = player.Character.HumanoidRootPart
+		local destination = root.Position + v3(300, 0, 0)
+		AntiCheat.NotePlausibleTeleport(player, 1, destination)
+		moveTo(player, destination)
+		shim.advance(2.1) -- window over and at least one sample taken afterwards
+		expect(AntiCheat.GetStrikes(player)).toBe(0)
+		-- Inside the window the client's own report is not adopted: a jump away from the server's
+		-- destination is still measured once the window ends.
+		AntiCheat.NotePlausibleTeleport(player, 1, destination)
+		moveTo(player, destination + v3(1000, 0, 0))
+		shim.advance(2.1)
+		expect(AntiCheat.GetStrikes(player)).toBe(1)
+	end)
+
 	it("blocks pickups while flagged and cleans up on leave", function()
 		local Orders = env.services.OrderService
 		local order = pizzaOrder(env, player)
@@ -1225,6 +1358,49 @@ describe("TutorialService", function()
 		expect(last.completed).toBe(true)
 		expect(type(last.title)).toBe("string")
 		expect(Tutorial.GetHint(8).title).toBe("First upgrade")
+	end)
+
+	it("advances for a player who walks the first order and words step 2 by vehicle presence", function()
+		local updates = {}
+		env.Remotes.getEvent("TutorialUpdated").OnClientEvent:Connect(function(payload)
+			table.insert(updates, payload)
+		end)
+		Tutorial.AdvanceTutorial(player, 0)
+		local first = Orders.GetAvailable(player)[1]
+		expect(Orders.Accept(player, first.id).ok).toBe(true)
+		expect(Tutorial.GetStep(player)).toBe(2)
+		-- No vehicle yet: the copy points at the hub pad, never at a bike that does not exist.
+		local noBike = updates[#updates]
+		expect(noBike.step).toBe(2)
+		expect(noBike.hint).toMatch("Take vehicle")
+		expect(Tutorial.GetHint(2, player).hint).toMatch("Take vehicle")
+		expect(Tutorial.GetHint(2).hint).toBe("Press Ride next to the bike")
+		-- Spawning a bike re-sends step 2 with the ride copy.
+		expect(Vehicles.Spawn(player, "Bicycle").ok).toBe(true)
+		shim.step()
+		local withBike = updates[#updates]
+		expect(withBike.step).toBe(2)
+		expect(withBike.hint).toBe("Press Ride next to the bike")
+		expect(Tutorial.GetHint(2, player).hint).toBe("Press Ride next to the bike")
+		Vehicles.Despawn(player)
+
+		-- Walk to the counter instead of mounting.
+		moveTo(player, env.world.businesses.SliceStreetPizza.pickupPosition)
+		shim.advance(1.1)
+		expect(Tutorial.GetStep(player)).toBe(4)
+		expect(Orders.RequestPickup(player, first.id).ok).toBe(true)
+		expect(Tutorial.GetStep(player)).toBe(5)
+		expect(deliverOrder(env, player, first).ok).toBe(true)
+		expect(Tutorial.GetStep(player)).toBe(6)
+
+		-- Collecting straight from step 2 (counter reached between polls) also advances.
+		local walker = joinPlayer(env, "Walker", 603)
+		Tutorial.AdvanceTutorial(walker, 0)
+		local order = Orders.GetAvailable(walker)[1]
+		Orders.Accept(walker, order.id)
+		expect(Tutorial.GetStep(walker)).toBe(2)
+		expect(collectOrder(env, walker, order).ok).toBe(true)
+		expect(Tutorial.GetStep(walker)).toBe(5)
 	end)
 
 	it("lets step 8 be dismissed without buying", function()
@@ -1402,6 +1578,36 @@ describe("InteractionService", function()
 		expect(invoke("RequestPickup", order.id).error).toBe("RateLimited")
 		shim.advance(0.35)
 		expect(invoke("RequestPickup", order.id).ok).toBe(true)
+	end)
+
+	it("does not keep a bucket per bogus order id forever", function()
+		local RateLimiter = shim.requirePath("ReplicatedStorage/Shared/Util/RateLimiter")
+		local limiter = RateLimiter.new(1 / 0.3, 1)
+		-- Fresh keys at a steady trickle: once SWEEP_EVERY new keys have been seen the idle ones
+		-- (older than the 0.3 s refill time) go; a key still inside its window is kept with its tokens.
+		for i = 1, RateLimiter.SWEEP_EVERY - 2 do
+			expect(limiter:Allow("k" .. i)).toBe(true)
+		end
+		shim.advance(1)
+		expect(limiter:Allow("fresh")).toBe(true)
+		expect(limiter:Count()).toBe(RateLimiter.SWEEP_EVERY - 1)
+		expect(limiter:Allow("trigger")).toBe(true)
+		expect(limiter:Count()).toBe(2) -- "fresh" (empty, inside its window) and "trigger"
+		expect(limiter:Allow("fresh")).toBe(false)
+		expect(limiter:Sweep(0)).toBe(2)
+		expect(limiter:Count()).toBe(0)
+
+		-- InteractionService: spamming RequestPickup with random ids (each rejected as NotFound by
+		-- OrderService) leaves no permanent entry behind: a leave sweeps, and so does the trickle.
+		for i = 1, 10 do -- under the per-player burst of 12
+			expect(invoke("RequestPickup", "no-such-order-" .. i).error).toBe("NotFound")
+		end
+		expect(env.services.InteractionService._orderLimiter:Count()).toBe(10)
+		shim.advance(1)
+		shim.removePlayer(player)
+		shim.advance(0.1)
+		local InteractionService = env.services.InteractionService
+		expect(InteractionService._orderLimiter:Count()).toBe(0)
 	end)
 
 	it("returns Unavailable for services that are not loaded", function()

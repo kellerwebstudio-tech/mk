@@ -39,6 +39,7 @@ local ctx: any = nil
 local limiter = RateLimiter.new(RATE_PER_SECOND, RATE_BURST)
 local orderLimiter = RateLimiter.new(1 / ORDER_RATE_INTERVAL, 1)
 local heartbeatLimiter = RateLimiter.new(HEARTBEAT_RATE, HEARTBEAT_BURST)
+InteractionService._orderLimiter = orderLimiter -- exposed for the offline specs
 
 -------------------------------------------------------------------------------
 -- Validation helpers
@@ -375,6 +376,10 @@ function InteractionService.Start()
 	Players.PlayerRemoving:Connect(function(player)
 		limiter:Reset(player)
 		heartbeatLimiter:Reset(player)
+		-- orderLimiter keys are "<userId>:<action>:<orderId>" strings (client-supplied ids, so a
+		-- Reset per key is impossible); RateLimiter sweeps idle buckets itself, this just frees the
+		-- leaver's entries at once.
+		orderLimiter:Sweep()
 	end)
 end
 

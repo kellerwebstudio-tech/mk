@@ -216,14 +216,17 @@ local function applyProfile(profile: any)
 end
 
 local function applyVehicle(vehicle: any)
-	if type(vehicle) ~= "table" then
+	-- "Despawning" is the server's terminal event (VehicleService.clearRecord fires it last and
+	-- nothing follows until the next Spawn), so it is normalised to "no vehicle" here; otherwise
+	-- every consumer that tests `vehicle.state` would keep treating the player as having one.
+	if type(vehicle) ~= "table" or vehicle.state == nil or vehicle.state == "Despawning" then
 		ClientState.set("vehicle", { state = nil, vehicleId = nil, model = nil })
 		return
 	end
 	local current = ClientState.get("vehicle") or {}
 	local model = vehicle.model
 	if typeof(model) ~= "Instance" then
-		model = (vehicle.state ~= nil and vehicle.state ~= "Despawning") and current.model or nil
+		model = current.model
 	end
 	ClientState.set("vehicle", {
 		state = vehicle.state,

@@ -75,10 +75,8 @@ local function purchase(upgradeId: string)
 	task.spawn(function()
 		local result = UIKit.invoke(ctx, "PurchaseUpgrade", upgradeId)
 		busy[upgradeId] = nil
-		if result.ok then
-			local def = UpgradeDefinitions.Upgrades[upgradeId]
-			UIKit.notify(ctx, string.format("Bought %s!", def and def.name or upgradeId), "success", 3)
-		else
+		if not result.ok then
+			-- (a success is announced by ShopService's "Purchased ..." Notify)
 			UIKit.notify(ctx, tostring(result.message or result.error or "Purchase failed"), "error", 4)
 		end
 		UpgradeMenu.Update()

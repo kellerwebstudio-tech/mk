@@ -46,6 +46,8 @@ local lastOrbitInput = -math.huge
 local recentering = false
 local stickInput = Vector2.zero
 local rightMouseDown = false
+local mouseLocked = false -- we set UserInputService.MouseBehavior for the orbit drag
+local mouseIconWasEnabled = true
 local activeTouch = nil
 local cameraPosition = nil
 local cameraLook = nil
@@ -135,9 +137,40 @@ local function touchIsOrbitArea(position: Vector3): boolean
 	return true
 end
 
+-- Under CameraType.Scriptable the PlayerModule disables its CameraInput, which is what normally
+-- locks and hides the cursor during a right-drag; do it here so an orbit never walks the pointer
+-- across the HUD or out of the window. Only Default is ever restored, and only if we set the lock.
+local function setMouseLock(locked: boolean)
+	if locked == mouseLocked then
+		return
+	end
+	mouseLocked = locked
+	pcall(function()
+		if locked then
+			mouseIconWasEnabled = UserInputService.MouseIconEnabled ~= false
+			UserInputService.MouseBehavior = Enum.MouseBehavior.LockCurrentPosition
+			UserInputService.MouseIconEnabled = false
+		else
+			UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+			UserInputService.MouseIconEnabled = mouseIconWasEnabled
+		end
+	end)
+end
+
+-- Drops every held orbit input (window focus loss does not guarantee InputEnded).
+local function releaseOrbitInputs()
+	rightMouseDown = false
+	activeTouch = nil
+	stickInput = Vector2.zero
+	setMouseLock(false)
+end
+
 local function onInputBegan(input: InputObject, processed: boolean)
 	if input.UserInputType == Enum.UserInputType.MouseButton2 then
 		rightMouseDown = true
+		if driving then
+			setMouseLock(true)
+		end
 	elseif input.UserInputType == Enum.UserInputType.Touch and not processed and activeTouch == nil then
 		if touchIsOrbitArea(input.Position) then
 			activeTouch = input
@@ -151,6 +184,7 @@ local function onInputChanged(input: InputObject, processed: boolean)
 	end
 	if input.UserInputType == Enum.UserInputType.MouseMovement then
 		if rightMouseDown then
+			setMouseLock(true) -- the button may have gone down before driving started
 			local delta = input.Delta
 			-- Dragging down raises the camera (looks down), like the default Roblox camera.
 			applyOrbitDelta(-delta.X * CameraController.MOUSE_YAW_RATE, delta.Y * CameraController.MOUSE_PITCH_RATE)
@@ -173,6 +207,7 @@ end
 local function onInputEnded(input: InputObject)
 	if input.UserInputType == Enum.UserInputType.MouseButton2 then
 		rightMouseDown = false
+		setMouseLock(false)
 	elseif input.UserInputType == Enum.UserInputType.Touch then
 		if activeTouch == input then
 			activeTouch = nil
@@ -323,6 +358,7 @@ local function setDriving(enabled: boolean)
 			end)
 		end
 	else
+		releaseOrbitInputs()
 		restoreDefaultCamera()
 	end
 end
@@ -362,6 +398,7 @@ function CameraController.Start()
 	UserInputService.InputBegan:Connect(onInputBegan)
 	UserInputService.InputChanged:Connect(onInputChanged)
 	UserInputService.InputEnded:Connect(onInputEnded)
+	UserInputService.WindowFocusReleased:Connect(releaseOrbitInputs)
 
 	local input = controller("InputController")
 	if input and input.Pressed then

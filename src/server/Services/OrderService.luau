@@ -711,7 +711,10 @@ function OrderService.GetOrder(orderId: string): Order?
 	return ordersById[orderId]
 end
 
-function OrderService.Accept(player: Player, orderId: string)
+-- opts: { viaContract: boolean? }. Contract offers (order.contractId ~= nil) can only be accepted
+-- through ContractService.Join (which passes viaContract); the AcceptOrder remote passes no opts,
+-- so a client cannot take a single Lunch Rush offer outside the batch rules.
+function OrderService.Accept(player: Player, orderId: string, opts)
 	local st = states[player]
 	local order = findOwned(player, orderId)
 	if not st or not order then
@@ -719,6 +722,9 @@ function OrderService.Accept(player: Player, orderId: string)
 	end
 	if order.state ~= "Available" then
 		return fail("WrongState", "That order was already accepted")
+	end
+	if order.contractId ~= nil and not (type(opts) == "table" and opts.viaContract == true) then
+		return fail("Locked", "Join the Lunch Rush from the Contract tab")
 	end
 	local profile = getProfile(player)
 	if not profile then

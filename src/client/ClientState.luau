@@ -3,8 +3,11 @@
 -- Bootstrap seeds it from GetSnapshot and keeps it updated from server RemoteEvents; controllers
 -- subscribe with onChange(key, fn). Keys are the documented fields (docs/ARCHITECTURE.md section 7):
 --   profile, orders ({available, active, capacity, serverTime}), vehicle ({state, vehicleId, model}),
---   contract, depot, tutorial ({step, completed, title, body, hint}), serverTimeOffset,
+--   contract, depot, tutorial ({step, completed, title, body, hint}; nil until the profile is
+--   known so returning players never see the welcome banner), serverTimeOffset,
 --   stopOrder ({orderId}), settings, device ("Keyboard" | "Gamepad" | "Touch").
+-- vehicle.state is nil when the player has no vehicle: the bootstrap maps the server's terminal
+-- "Despawning" event to nil, so consumers only ever see the live states.
 -- Also forwards server OrderEvent / WorldEvent payloads as signals.
 -- Stop / interaction positions prefer the streamed world instances when they are present
 -- (workspace.PickupLocations.<businessId>.PickupPad, workspace.DeliveryDestinations.<destinationId>
@@ -28,7 +31,7 @@ local values: { [string]: any } = {
 	vehicle = { state = nil, vehicleId = nil, model = nil },
 	contract = nil,
 	depot = nil,
-	tutorial = { step = 0, completed = false, title = nil, body = nil, hint = nil },
+	tutorial = nil, -- unknown until the snapshot / TutorialUpdated arrives (no banner before then)
 	serverTimeOffset = 0,
 	stopOrder = {},
 	settings = nil,

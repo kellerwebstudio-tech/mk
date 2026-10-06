@@ -576,3 +576,145 @@ describe("InputController brake and drive fallback", function()
 		shim.input.release(Enum.KeyCode.W)
 	end)
 end)
+
+-------------------------------------------------------------------------------
+-- VehicleController jump lock (touch jump button bypasses ContextActionService)
+-------------------------------------------------------------------------------
+
+describe("VehicleController jump lock", function()
+	local Jumping = Enum.HumanoidStateType.Jumping
+
+	it("disables the humanoid Jumping state while driving and restores it on every stop", function()
+		local ctx, _, ClientState = setup({ "InputController", "VehicleController" })
+		local Vehicle = ctx.controllers.VehicleController
+		local character = spawnAt(0, 0)
+		local humanoid = character.Humanoid
+		expect(humanoid:GetStateEnabled(Jumping)).toBe(true)
+		local model, _, seat = buildVehicleModel("Bicycle", 1, v3(0, 0, 0))
+
+		-- Driving reported but not seated yet: the rider keeps jumping (the controller is inactive).
+		ClientState.set("vehicle", { state = "Driving", vehicleId = "Bicycle", model = model })
+		shim.advance(0.2)
+		expect(Vehicle.IsActive()).toBe(false)
+		expect(humanoid:GetStateEnabled(Jumping)).toBe(true)
+
+		seat:Sit(humanoid)
+		shim.advance(0.2)
+		expect(Vehicle.IsActive()).toBe(true)
+		expect(humanoid:GetStateEnabled(Jumping)).toBe(false)
+
+		-- Server dismount state event.
+		ClientState.set("vehicle", { state = "Parked", vehicleId = "Bicycle", model = model })
+		shim.advance(0.1)
+		expect(Vehicle.IsActive()).toBe(false)
+		expect(humanoid:GetStateEnabled(Jumping)).toBe(true)
+
+		-- Back on, then unseated by the server (Sit = false / SeatWeld destroyed) before any event.
+		seat:Sit(humanoid)
+		ClientState.set("vehicle", { state = "Driving", vehicleId = "Bicycle", model = model })
+		shim.advance(0.2)
+		expect(Vehicle.IsActive()).toBe(true)
+		expect(humanoid:GetStateEnabled(Jumping)).toBe(false)
+		humanoid.Sit = false
+		shim.advance(0.1)
+		expect(humanoid.SeatPart).toBeNil()
+		expect(Vehicle.IsActive()).toBe(false)
+		expect(humanoid:GetStateEnabled(Jumping)).toBe(true)
+	end)
+
+	it("restores jumping when the rider dies or the vehicle model disappears", function()
+		local ctx, _, ClientState = setup({ "InputController", "VehicleController" })
+		local Vehicle = ctx.controllers.VehicleController
+		local character = spawnAt(0, 0)
+		local humanoid = character.Humanoid
+		local model, _, seat = buildVehicleModel("Bicycle", 1, v3(0, 0, 0))
+		seat:Sit(humanoid)
+		ClientState.set("vehicle", { state = "Driving", vehicleId = "Bicycle", model = model })
+		shim.advance(0.2)
+		expect(Vehicle.IsActive()).toBe(true)
+		expect(humanoid:GetStateEnabled(Jumping)).toBe(false)
+
+		-- Vehicle destroyed externally: the loop stops and the lock is lifted.
+		model:Destroy()
+		shim.advance(0.1)
+		expect(Vehicle.IsActive()).toBe(false)
+		expect(humanoid:GetStateEnabled(Jumping)).toBe(true)
+
+		-- Death while driving.
+		local model2, _, seat2 = buildVehicleModel("Bicycle", 1, v3(0, 0, 0))
+		seat2:Sit(humanoid)
+		ClientState.set("vehicle", { state = "Driving", vehicleId = "Bicycle", model = model2 })
+		shim.advance(0.2)
+		expect(Vehicle.IsActive()).toBe(true)
+		expect(humanoid:GetStateEnabled(Jumping)).toBe(false)
+		humanoid.Health = 0
+		shim.advance(0.1)
+		expect(Vehicle.IsActive()).toBe(false)
+		expect(humanoid:GetStateEnabled(Jumping)).toBe(true)
+	end)
+end)
+
+-------------------------------------------------------------------------------
+-- CameraController orbit cursor lock (PlayerModule CameraInput is off under Scriptable)
+-------------------------------------------------------------------------------
+
+describe("CameraController orbit cursor lock", function()
+	it("locks and hides the cursor for a right-mouse drag while driving and frees it on release, focus loss and dismount", function()
+		local ctx, _, ClientState = setup({ "InputController", "CameraController" })
+		spawnAt(0, 0)
+		local model = buildVehicleModel("Bicycle", 1, v3(0, 0, 0))
+		local uis = svc("UserInputService")
+		local camera = svc("Workspace").CurrentCamera
+		local function mouse2(state)
+			local io = shim.input.makeInputObject(nil, Enum.UserInputType.MouseButton2, state)
+			if state == Enum.UserInputState.Begin then
+				uis.InputBegan:Fire(io, false)
+			else
+				uis.InputEnded:Fire(io, false)
+			end
+		end
+		local function drag(dx, dy)
+			local io = shim.input.makeInputObject(nil, Enum.UserInputType.MouseMovement, Enum.UserInputState.Change, Vector3.zero, Vector3.new(dx, dy, 0))
+			uis.InputChanged:Fire(io, false)
+		end
+
+		-- On foot the default camera owns the cursor: never touched.
+		mouse2(Enum.UserInputState.Begin)
+		drag(10, 0)
+		expect(uis.MouseBehavior).toBe(Enum.MouseBehavior.Default)
+		expect(uis.MouseIconEnabled).toBe(true)
+		mouse2(Enum.UserInputState.End)
+
+		ClientState.set("vehicle", { state = "Driving", vehicleId = "Bicycle", model = model })
+		shim.step(1 / 60)
+		expect(camera.CameraType).toBe(Enum.CameraType.Scriptable)
+
+		mouse2(Enum.UserInputState.Begin)
+		expect(uis.MouseBehavior).toBe(Enum.MouseBehavior.LockCurrentPosition)
+		expect(uis.MouseIconEnabled).toBe(false)
+		drag(40, 0)
+		local yaw = ctx.controllers.CameraController.GetOrbit()
+		expect(yaw).never.toBe(0)
+		mouse2(Enum.UserInputState.End)
+		expect(uis.MouseBehavior).toBe(Enum.MouseBehavior.Default)
+		expect(uis.MouseIconEnabled).toBe(true)
+
+		-- Focus lost mid-drag: InputEnded is not guaranteed, the lock must still go.
+		mouse2(Enum.UserInputState.Begin)
+		expect(uis.MouseBehavior).toBe(Enum.MouseBehavior.LockCurrentPosition)
+		uis.WindowFocusReleased:Fire()
+		expect(uis.MouseBehavior).toBe(Enum.MouseBehavior.Default)
+		expect(uis.MouseIconEnabled).toBe(true)
+
+		-- Dismount while still holding the button: the default camera gets a free cursor back.
+		mouse2(Enum.UserInputState.Begin)
+		expect(uis.MouseBehavior).toBe(Enum.MouseBehavior.LockCurrentPosition)
+		ClientState.set("vehicle", { state = "Parked", vehicleId = "Bicycle", model = model })
+		shim.step(1 / 60)
+		expect(camera.CameraType).toBe(Enum.CameraType.Custom)
+		expect(uis.MouseBehavior).toBe(Enum.MouseBehavior.Default)
+		expect(uis.MouseIconEnabled).toBe(true)
+		mouse2(Enum.UserInputState.End)
+		expect(uis.MouseBehavior).toBe(Enum.MouseBehavior.Default)
+	end)
+end)

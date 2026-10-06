@@ -40,8 +40,6 @@ local TOUCH_POSITIONS = {
 	[InputActions.Names.Interact] = UDim2.new(0.12, 0, 0.3, 0),
 	[InputActions.Names.MountDismount] = UDim2.new(0.52, 0, 0.1, 0),
 	[InputActions.Names.Recover] = UDim2.new(0.12, 0, 0.72, 0),
-	[InputActions.Names.NextStop] = UDim2.new(0.3, 0, 0.72, 0),
-	[InputActions.Names.Horn] = UDim2.new(0.3, 0, 0.1, 0),
 }
 
 local ctx = nil

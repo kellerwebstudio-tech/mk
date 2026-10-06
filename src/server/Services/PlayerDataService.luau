@@ -136,6 +136,9 @@ local ctx: any = nil
 local sessions: { [Player]: Session } = {}
 local store: any = nil
 local closing = false
+-- DataStore jobs (saves, and lock releases for a load whose player already left) that BindToClose
+-- must wait for even when their session is no longer in `sessions` (a leave-save in flight).
+local inflightJobs = 0
 
 local function keyFor(player: Player): string
 	return "u_" .. tostring(player.UserId)
@@ -309,6 +312,7 @@ local function loadSession(session: Session)
 	if sessions[player] ~= session then
 		-- The player left while we were loading; release the lock we may have claimed.
 		if status == "ok" then
+			inflightJobs += 1
 			pcall(function()
 				getStore():UpdateAsync(session.key, function(stored)
 					if type(stored) == "table" and type(stored.lock) == "table" and stored.lock.jobId == JOB_ID then
@@ -318,6 +322,7 @@ local function loadSession(session: Session)
 					return nil
 				end)
 			end)
+			inflightJobs -= 1
 		end
 		return
 	end
@@ -370,6 +375,7 @@ local function saveSession(session: Session, releaseLock: boolean): boolean
 		return true
 	end
 	session.saving = true
+	inflightJobs += 1
 	local wasDirty = session.dirty
 	session.dirty = false
 
@@ -416,6 +422,7 @@ local function saveSession(session: Session, releaseLock: boolean): boolean
 	if not success and wasDirty then
 		session.dirty = true
 	end
+	inflightJobs -= 1
 	session.saving = false
 	return success
 end
@@ -476,8 +483,10 @@ local function onClose()
 			end)
 		end
 	end
+	-- Also wait for saves spawned by onPlayerRemoving (their sessions are already out of `sessions`)
+	-- and for lock releases of loads whose player left, so the server never shuts down mid-write.
 	local deadline = os.clock() + BIND_TO_CLOSE_TIMEOUT
-	while pending > 0 and os.clock() < deadline do
+	while (pending > 0 or inflightJobs > 0) and os.clock() < deadline do
 		task.wait(WAIT_POLL)
 	end
 end

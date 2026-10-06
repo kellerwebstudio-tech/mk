@@ -285,6 +285,16 @@ function ShopService.EquipCosmetic(player: Player, cosmeticId: string)
 		if orders and orders.RefreshPackages then
 			orders.RefreshPackages(player)
 		end
+	elseif def.slot == "DepotSign" or def.slot == "DepotDecor" then
+		-- Depot cosmetics are built server-side by DepotBuilder.apply; re-run it on the claimed plot
+		-- (no-op without a plot) so the purchase is visible at once instead of on the next rejoin.
+		local depot = service("DepotService")
+		if depot and type(depot.RefreshVisuals) == "function" then
+			local okRefresh, err = pcall(depot.RefreshVisuals, player)
+			if not okRefresh then
+				warn("[ShopService] DepotService.RefreshVisuals failed:", err)
+			end
+		end
 	end
 	return Remotes.ok({ profile = publicProfile(player), cosmeticId = cosmeticId })
 end

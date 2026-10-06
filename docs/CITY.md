@@ -20,7 +20,7 @@ in `docs/map.png` (1 px = 1 stud).
 ```
 
 * **Central plaza** at (0, 0), radius 55, ringed by `PlazaRing` (a chamfered square 80 studs from the centre,
-  width 20). The **delivery hub** sits on the plaza's south apron: kiosk at (0, 40), four vehicle pads at
+  width 20). The **delivery hub** sits on the plaza's south apron: kiosk at (0, 48) in front of the Hub building (body z 34..46), four vehicle pads at
   z = 54 (x = -30, -10, 10, 30) facing north, spawn at (0, 62). **Bean & Bun Café** is a pavilion on the
   plaza's west side (door at (-57, 10), arrival pad on the inner kerb of the ring).
 * **Beacon Tower** (120 studs tall) stands north-west of the plaza at (-110, -112).

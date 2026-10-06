@@ -45,7 +45,7 @@ Timing target: first delivery complete within ~3 minutes of spawning.
 29. Shut down the server with players online (Studio Stop). Expected: BindToClose saves; rejoin shows the latest state.
 
 ## F. Devices
-30. Touch emulator (Device → phone). Expected: thumbstick drives, Brake/Interact/Ride buttons in the lower right, all menus usable with taps, HUD within safe areas, minimap bottom-left, text readable at 375×667.
+30. Touch emulator (Device → phone). Expected: thumbstick drives, Brake/Interact/Ride buttons in the lower right, all menus usable with taps, HUD within safe areas, minimap top-left under the deliveries mini list (140 px, translucent) so the dynamic thumbstick zone stays clear, toasts never overlap the top-centre results card, text readable at 375×667.
 31. Gamepad. Expected: left stick drives, LT brakes, X interacts, Y mounts, D-pad up opens Orders, Start opens Menu, B/Escape closes menus, focus visible on buttons, R3 recenters the camera.
 
 ## G. Performance (8 players)

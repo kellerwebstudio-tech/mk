@@ -354,6 +354,11 @@ local function isTouchDevice(): boolean
 	return UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
 end
 
+-- Whether layouts should use their touch variant (UIController.applyDevice sets the override).
+function UIKit.isTouchLayout(): boolean
+	return isTouchDevice()
+end
+
 function UIKit.viewportSize(): Vector2
 	local camera = workspace.CurrentCamera
 	if camera then

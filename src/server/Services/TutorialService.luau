@@ -31,6 +31,7 @@ local HINTS = {
 	[0] = { title = "Welcome to Delivery Dash City", body = "You're a courier. Orders appear on your Dash app; pick them up at the business and ride them to the customer.", hint = "Tap Continue" },
 	[1] = { title = "Your first order", body = "Slice Street Pizza has a pizza waiting. Open the order board and accept it.", hint = "Open Orders and press Accept" },
 	[2] = { title = "Get on your bike", body = "Your courier bicycle is parked nearby. Walk up to it and hop on.", hint = "Press Ride next to the bike" },
+
 	[3] = { title = "Ride to Slice Street", body = "Follow the route markers to the pizzeria. Alleys and bike paths are bicycle-only shortcuts.", hint = "Follow the glowing markers" },
 	[4] = { title = "Collect the order", body = "Stop at the counter and grab the pizza.", hint = "Press Interact at the counter" },
 	[5] = { title = "Deliver it", body = "Ride to the customer's door and hand it over before it gets cold.", hint = "Press Interact at the door" },
@@ -39,6 +40,10 @@ local HINTS = {
 	[8] = { title = "First upgrade", body = "Open the shop and buy Basket I to carry an extra order at once.", hint = "Open the Menu, then Upgrades" },
 	[9] = { title = "You're ready", body = "The city is yours. Deliver more to unlock new businesses, the scooter, contracts and your own depot.", hint = "" },
 }
+
+-- Step 2 variant shown while the player has no vehicle spawned yet (a bike only exists after the
+-- hub pad prompt); the server-sent text wins over the client fallback.
+local HINT_STEP2_NO_VEHICLE = { title = "Get a bike", body = "Walk to a vehicle pad at the Dash Hub and take your courier bicycle, then hop on. You can also walk the first order if you like.", hint = "Press Take vehicle at the pad" }
 
 type TutorialState = {
 	step: number,
@@ -68,13 +73,20 @@ local function getProfile(player: Player): Profile?
 	return playerData and playerData.GetProfile(player) or nil
 end
 
-function TutorialService.GetHint(step: number)
+-- Text for a step. With a player, step 2 reflects whether a vehicle exists yet.
+function TutorialService.GetHint(step: number, player: Player?)
 	local hint = HINTS[step] or HINTS[0]
+	if step == 2 and player ~= nil then
+		local vehicles = service("VehicleService")
+		if vehicles and vehicles.GetVehicle and vehicles.GetVehicle(player) == nil then
+			hint = HINT_STEP2_NO_VEHICLE
+		end
+	end
 	return { title = hint.title, body = hint.body, hint = hint.hint }
 end
 
 local function sendUpdate(player: Player, step: number, completed: boolean)
-	local hint = TutorialService.GetHint(step)
+	local hint = TutorialService.GetHint(step, player)
 	pcall(function()
 		ctx.remotes.getEvent("TutorialUpdated"):FireClient(player, {
 			step = step,
@@ -244,12 +256,22 @@ local function onMounted(player: Player)
 	end
 end
 
+-- A vehicle appearing (or vanishing) at step 2 changes the step-2 copy; re-send it.
+local function onVehicleStateChanged(player: Player, vehicleState: string)
+	local state = states[player]
+	if state and state.step == 2 and (vehicleState == "Parked" or vehicleState == "Despawning") then
+		sendUpdate(player, 2, false)
+	end
+end
+
+-- Walking the first order is allowed (pickup/delivery are not vehicle-gated), so the collect
+-- transition tolerates a skipped mount (step 2) as well as steps 3/4.
 local function onOrderCollected(player: Player, order: Order)
 	local state = states[player]
 	if not state or not order.isTutorial then
 		return
 	end
-	if (state.step == 3 or state.step == 4) and order.id == state.firstOrderId then
+	if state.step >= 2 and state.step <= 4 and order.id == state.firstOrderId then
 		setStep(player, 5)
 	end
 end
@@ -279,9 +301,10 @@ local function onOrderRemoved(player: Player, order: Order, reason: string)
 	end
 end
 
--- 1 s poll: proximity for step 3 and the upgrade purchase for step 8.
+-- 1 s poll: pickup proximity for steps 2/3 (a walker reaches the counter without mounting) and
+-- the upgrade purchase for step 8.
 local function pollPlayer(player: Player, state: TutorialState)
-	if state.step == 3 then
+	if state.step == 2 or state.step == 3 then
 		local vehicles = service("VehicleService")
 		local world = ctx.world
 		local business = world and world.businesses and world.businesses[TUTORIAL_BUSINESS]
@@ -388,6 +411,9 @@ function TutorialService.Start()
 	local vehicles = service("VehicleService")
 	if vehicles then
 		vehicles.Mounted:Connect(onMounted)
+		if vehicles.StateChanged then
+			vehicles.StateChanged:Connect(onVehicleStateChanged)
+		end
 	end
 	Players.PlayerRemoving:Connect(function(player)
 		states[player] = nil
