@@ -45,8 +45,8 @@ Parked ──Mount──▶ Mounting ──seated+owner set──▶ Driving ─
                      │ fail ▶ Parked                 │ Recover ▶ Recovering ▶ Driving
 Parked ──Recover──▶ Recovering ──▶ Parked           │ Despawn/leave/switch ▶ Despawning ▶ (gone)
 ```
-- Parked: chassis anchored, velocity zero, network owner server, seat `Disabled = true` (manual `Sit` only).
-- Mounting: validation passed; unanchor; `seat:Sit(humanoid)`; verify `seat.Occupant == humanoid` within 0.3 s (retry once toggling `Disabled`), set network owner to the player, state Driving. On failure revert to Parked and tell the player.
+- Parked: chassis anchored, velocity zero, network owner server, seat `Disabled = true` (nobody can sit by touching it).
+- Mounting: validation passed; unanchor; enable the seat (`Disabled = false`, kept enabled for the whole ride so the engine delivers `ThrottleFloat/SteerFloat` to the occupant); `seat:Sit(humanoid)`; verify `seat.Occupant == humanoid` within 0.3 s (retry once toggling `Disabled`), set network owner to the player, state Driving. On failure revert to Parked (seat disabled again) and tell the player.
 - Driving: owner client controller active. Server watchdog: unauthorized occupant → eject (`humanoid.Sit = false; Jump = true`) and keep state; owner no longer seated (fell out, died, reset) → run Dismount logic automatically.
 - Dismounting: unseat, teleport character to `DismountAttachment.WorldPosition` (+ raise 3), snap chassis upright at ground + rideHeight, zero velocity, anchor, owner nil, state Parked.
 - Recovering: compute `CityService.GetSafeRespawnCFrame(lastSafePosition, mask)`; `model:PivotTo(cf)`; if driving, the rider moves with the model (seated); `AntiCheatService.NotePlausibleTeleport(player, 3)`; return to the previous state.

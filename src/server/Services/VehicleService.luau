@@ -465,6 +465,9 @@ local function unseat(record: VehicleRecord, humanoid: Humanoid?)
 	if weld then
 		weld:Destroy()
 	end
+	pcall(function()
+		record.seat.Disabled = true
+	end)
 end
 
 -- Dismount logic shared by Dismount, Died, watchdog and Despawn. Leaves the vehicle Parked.
@@ -552,6 +555,14 @@ local function doRecover(player: Player, record: VehicleRecord): boolean
 	return true
 end
 
+-- Enables/disables the VehicleSeat. Disabled seats cannot be sat on by touching; the seat is
+-- enabled only while the owner rides so throttle/steer input is delivered by the engine.
+local function setSeatEnabled(record: VehicleRecord, enabled: boolean)
+	pcall(function()
+		record.seat.Disabled = not enabled
+	end)
+end
+
 -- Seats the humanoid and verifies it, retrying once by toggling Disabled. May yield.
 local function trySeat(record: VehicleRecord, humanoid: Humanoid): boolean
 	local seat = record.seat
@@ -571,6 +582,10 @@ local function trySeat(record: VehicleRecord, humanoid: Humanoid): boolean
 		end
 		return seat.Occupant == humanoid
 	end
+	-- The seat is enabled for the whole ride so the engine feeds ThrottleFloat/SteerFloat to the
+	-- occupant; it is disabled again when the vehicle parks (see setSeatEnabled) so nobody can
+	-- sit by touching it. Ownership is still enforced by the watchdog.
+	setSeatEnabled(record, true)
 	pcall(function()
 		seat:Sit(humanoid)
 	end)
@@ -581,20 +596,19 @@ local function trySeat(record: VehicleRecord, humanoid: Humanoid): boolean
 		return false
 	end
 	-- Retry once: toggle Disabled and sit again after a short delay.
-	pcall(function()
-		seat.Disabled = false
-	end)
+	setSeatEnabled(record, false)
 	task.wait(EconomyConfig.mountRetryDelay)
 	if record.state ~= "Mounting" then
 		return false
 	end
+	setSeatEnabled(record, true)
 	pcall(function()
 		seat:Sit(humanoid)
 	end)
 	local seated = waitSeated()
-	pcall(function()
-		seat.Disabled = true
-	end)
+	if not seated then
+		setSeatEnabled(record, false)
+	end
 	return seated
 end
 
