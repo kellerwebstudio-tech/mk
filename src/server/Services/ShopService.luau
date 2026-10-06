@@ -1,0 +1,369 @@
+--!nonstrict
+-- ShopService: vehicle, upgrade and cosmetic purchases plus equipping. Uses ProgressionService
+-- checks and PlayerDataService.TrySpendCash so money is only taken when the item is granted.
+-- See docs/ARCHITECTURE.md 5.8.
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Shared = ReplicatedStorage:WaitForChild("Shared")
+local Types = require(Shared.Types)
+local Remotes = require(Shared.Util.Remotes)
+local VehicleDefinitions = require(Shared.Definitions.VehicleDefinitions)
+local UpgradeDefinitions = require(Shared.Definitions.UpgradeDefinitions)
+local CosmeticDefinitions = require(Shared.Definitions.CosmeticDefinitions)
+
+local ServerRoot = script.Parent.Parent
+local BuildersFolder = ServerRoot:FindFirstChild("Builders")
+local vehicleBuilderModule = BuildersFolder and BuildersFolder:FindFirstChild("VehicleBuilder")
+local DefaultVehicleBuilder: any = if vehicleBuilderModule then require(vehicleBuilderModule) else nil
+
+type Profile = Types.Profile
+
+local VEHICLE_PAINT_SLOTS = { BikeColor = "Bicycle", ScooterSkin = "Scooter", VanPaint = "Van", VanDecal = "Van" }
+local VEST_NAME = "CourierVest"
+local PAID_ONLY_MESSAGE = "Available in the store"
+
+local ShopService = {}
+
+local ctx: any = nil
+local VehicleBuilder: any = nil
+
+-------------------------------------------------------------------------------
+-- Helpers
+-------------------------------------------------------------------------------
+
+local function service(name: string)
+	return ctx and ctx.services and ctx.services[name]
+end
+
+local function getProfile(player: Player): Profile?
+	local playerData = service("PlayerDataService")
+	return playerData and playerData.GetProfile(player) or nil
+end
+
+local function publicProfile(player: Player)
+	local playerData = service("PlayerDataService")
+	return playerData and playerData.GetPublicProfile(player) or nil
+end
+
+local function reasonMessage(reason: string?, itemName: string?): string
+	local name = itemName or "that item"
+	if reason == "AlreadyOwned" then
+		return "You already own " .. name
+	elseif reason == "Requirements" then
+		return "You don't meet the requirements for " .. name
+	elseif reason == "Insufficient" then
+		return "Not enough cash for " .. name
+	elseif reason == "Locked" then
+		return PAID_ONLY_MESSAGE
+	elseif reason == "NotFound" then
+		return "Unknown item"
+	end
+	return reason or "Unavailable"
+end
+
+local function notify(player: Player, text: string, kind: string)
+	pcall(function()
+		ctx.remotes.getEvent("Notify"):FireClient(player, { text = text, kind = kind, duration = 4 })
+	end)
+end
+
+local function toColor(rgb: any): Color3
+	if type(rgb) == "table" then
+		return Color3.fromRGB(rgb[1] or 255, rgb[2] or 255, rgb[3] or 255)
+	end
+	return Color3.fromRGB(250, 140, 40)
+end
+
+local function applyVehicleCosmetics(player: Player, profile: Profile)
+	local vehicles = service("VehicleService")
+	local record = vehicles and vehicles.GetVehicle(player)
+	if not record or not VehicleBuilder or not VehicleBuilder.applyCosmetics then
+		return
+	end
+	local def = VehicleDefinitions.get(record.vehicleId)
+	if not def then
+		return
+	end
+	local colors = CosmeticDefinitions.vehicleColors(record.vehicleId, profile.cosmetics.equipped, def.defaultColors)
+	pcall(VehicleBuilder.applyCosmetics, record.model, colors)
+end
+
+-- Builds (or rebuilds) the courier vest on the character from the equipped Uniform cosmetic.
+function ShopService.ApplyUniform(player: Player)
+	local character = player.Character
+	if not character or character.Parent == nil then
+		return
+	end
+	local torso = character:FindFirstChild("UpperTorso") or character:FindFirstChild("Torso")
+	if not torso or not torso:IsA("BasePart") then
+		return
+	end
+	local profile = getProfile(player)
+	local uniformId = profile and profile.cosmetics.equipped.Uniform or CosmeticDefinitions.Defaults.Uniform
+	local uniform = CosmeticDefinitions.get(uniformId or "") or CosmeticDefinitions.get(CosmeticDefinitions.Defaults.Uniform)
+	local data = uniform and uniform.data or {}
+
+	local existing = character:FindFirstChild(VEST_NAME)
+	if existing then
+		existing:Destroy()
+	end
+
+	local size = torso.Size
+	local vest = Instance.new("Part")
+	vest.Name = VEST_NAME
+	vest.Size = Vector3.new(size.X + 0.12, size.Y * 0.72, size.Z + 0.12)
+	vest.Color = toColor(data.vest)
+	vest.Material = Enum.Material.Fabric
+	vest.Massless = true
+	vest.CanCollide = false
+	vest.CanQuery = false
+	vest.CanTouch = false
+	vest.CastShadow = false
+	vest.CFrame = torso.CFrame * CFrame.new(0, size.Y * 0.08, 0)
+	pcall(function()
+		vest.CollisionGroup = "Players"
+	end)
+
+	local trim = Instance.new("Part")
+	trim.Name = "VestTrim"
+	trim.Size = Vector3.new(vest.Size.X + 0.04, 0.18, vest.Size.Z + 0.04)
+	trim.Color = toColor(data.trim)
+	trim.Material = Enum.Material.Neon
+	trim.Massless = true
+	trim.CanCollide = false
+	trim.CanQuery = false
+	trim.CanTouch = false
+	trim.CastShadow = false
+	trim.CFrame = vest.CFrame * CFrame.new(0, -vest.Size.Y * 0.25, 0)
+	pcall(function()
+		trim.CollisionGroup = "Players"
+	end)
+
+	local vestWeld = Instance.new("WeldConstraint")
+	vestWeld.Part0 = torso
+	vestWeld.Part1 = vest
+	vestWeld.Parent = vest
+	local trimWeld = Instance.new("WeldConstraint")
+	trimWeld.Part0 = vest
+	trimWeld.Part1 = trim
+	trimWeld.Parent = trim
+
+	trim.Parent = vest
+	vest.Parent = character
+end
+
+-------------------------------------------------------------------------------
+-- Vehicles
+-------------------------------------------------------------------------------
+
+function ShopService.EquipVehicle(player: Player, vehicleId: string)
+	if type(vehicleId) ~= "string" then
+		return Remotes.fail("Invalid", "Invalid vehicle")
+	end
+	local def = VehicleDefinitions.get(vehicleId)
+	if not def then
+		return Remotes.fail("NotFound", "Unknown vehicle")
+	end
+	local profile = getProfile(player)
+	if not profile then
+		return Remotes.fail("Locked", "Your profile is still loading")
+	end
+	if not profile.ownedVehicles[vehicleId] then
+		return Remotes.fail("Locked", "You don't own the " .. def.displayName)
+	end
+	local playerData = service("PlayerDataService")
+	playerData.Update(player, function(p: Profile)
+		p.equippedVehicle = vehicleId :: any
+	end)
+	local vehicles = service("VehicleService")
+	if vehicles then
+		local current = vehicles.GetCurrentVehicleId(player)
+		if current and current ~= vehicleId then
+			vehicles.Spawn(player, vehicleId)
+		end
+	end
+	return Remotes.ok({ profile = publicProfile(player), vehicleId = vehicleId })
+end
+
+function ShopService.PurchaseVehicle(player: Player, vehicleId: string)
+	if type(vehicleId) ~= "string" then
+		return Remotes.fail("Invalid", "Invalid vehicle")
+	end
+	local profile = getProfile(player)
+	if not profile then
+		return Remotes.fail("Locked", "Your profile is still loading")
+	end
+	local progression = service("ProgressionService")
+	local def = VehicleDefinitions.get(vehicleId)
+	local allowed, reason = progression.CanPurchaseVehicle(profile, vehicleId)
+	if not allowed then
+		return Remotes.fail(reason or "Locked", reasonMessage(reason, def and def.displayName))
+	end
+	local playerData = service("PlayerDataService")
+	if not playerData.TrySpendCash(player, def.price, "PurchaseVehicle:" .. vehicleId) then
+		return Remotes.fail("Insufficient", reasonMessage("Insufficient", def.displayName))
+	end
+	playerData.Update(player, function(p: Profile)
+		p.ownedVehicles[vehicleId] = true
+	end)
+	notify(player, "Purchased " .. def.displayName, "success")
+	-- A newly bought vehicle is equipped right away (respawns a spawned vehicle beside the player).
+	local equip = ShopService.EquipVehicle(player, vehicleId)
+	if not equip.ok then
+		return Remotes.ok({ profile = publicProfile(player) })
+	end
+	return Remotes.ok({ profile = publicProfile(player) })
+end
+
+-------------------------------------------------------------------------------
+-- Upgrades
+-------------------------------------------------------------------------------
+
+function ShopService.PurchaseUpgrade(player: Player, upgradeId: string)
+	if type(upgradeId) ~= "string" then
+		return Remotes.fail("Invalid", "Invalid upgrade")
+	end
+	local profile = getProfile(player)
+	if not profile then
+		return Remotes.fail("Locked", "Your profile is still loading")
+	end
+	local progression = service("ProgressionService")
+	local def = UpgradeDefinitions.get(upgradeId)
+	local allowed, reason = progression.CanPurchaseUpgrade(profile, upgradeId)
+	if not allowed then
+		return Remotes.fail(reason or "Locked", reasonMessage(reason, def and def.name))
+	end
+	local playerData = service("PlayerDataService")
+	if not playerData.TrySpendCash(player, def.price, "PurchaseUpgrade:" .. upgradeId) then
+		return Remotes.fail("Insufficient", reasonMessage("Insufficient", def.name))
+	end
+	playerData.Update(player, function(p: Profile)
+		p.upgrades[upgradeId] = (p.upgrades[upgradeId] or 0) + 1
+	end)
+	if def.effect.capacityBonus then
+		local vehicles = service("VehicleService")
+		if vehicles and vehicles.RefreshCapacity then
+			vehicles.RefreshCapacity(player)
+		end
+	end
+	notify(player, "Purchased " .. def.name, "success")
+	return Remotes.ok({ profile = publicProfile(player) })
+end
+
+-------------------------------------------------------------------------------
+-- Cosmetics
+-------------------------------------------------------------------------------
+
+function ShopService.EquipCosmetic(player: Player, cosmeticId: string)
+	if type(cosmeticId) ~= "string" then
+		return Remotes.fail("Invalid", "Invalid cosmetic")
+	end
+	local def = CosmeticDefinitions.get(cosmeticId)
+	if not def then
+		return Remotes.fail("NotFound", "Unknown cosmetic")
+	end
+	local profile = getProfile(player)
+	if not profile then
+		return Remotes.fail("Locked", "Your profile is still loading")
+	end
+	if not profile.cosmetics.owned[cosmeticId] then
+		return Remotes.fail("Locked", "You don't own " .. def.name)
+	end
+	local playerData = service("PlayerDataService")
+	playerData.Update(player, function(p: Profile)
+		p.cosmetics.equipped[def.slot] = cosmeticId
+	end)
+	local updated = getProfile(player) or profile
+	if VEHICLE_PAINT_SLOTS[def.slot] then
+		applyVehicleCosmetics(player, updated)
+	elseif def.slot == "Uniform" then
+		ShopService.ApplyUniform(player)
+	elseif def.slot == "BagStyle" then
+		local orders = service("OrderService")
+		if orders and orders.RefreshPackages then
+			orders.RefreshPackages(player)
+		end
+	end
+	return Remotes.ok({ profile = publicProfile(player), cosmeticId = cosmeticId })
+end
+
+function ShopService.PurchaseCosmetic(player: Player, cosmeticId: string)
+	if type(cosmeticId) ~= "string" then
+		return Remotes.fail("Invalid", "Invalid cosmetic")
+	end
+	local def = CosmeticDefinitions.get(cosmeticId)
+	if not def then
+		return Remotes.fail("NotFound", "Unknown cosmetic")
+	end
+	if def.paidOnly then
+		return Remotes.fail("Locked", PAID_ONLY_MESSAGE)
+	end
+	local profile = getProfile(player)
+	if not profile then
+		return Remotes.fail("Locked", "Your profile is still loading")
+	end
+	local progression = service("ProgressionService")
+	local allowed, reason = progression.CanPurchaseCosmetic(profile, cosmeticId)
+	if not allowed then
+		return Remotes.fail(reason or "Locked", reasonMessage(reason, def.name))
+	end
+	local playerData = service("PlayerDataService")
+	if not playerData.TrySpendCash(player, def.price, "PurchaseCosmetic:" .. cosmeticId) then
+		return Remotes.fail("Insufficient", reasonMessage("Insufficient", def.name))
+	end
+	playerData.Update(player, function(p: Profile)
+		p.cosmetics.owned[cosmeticId] = true
+	end)
+	notify(player, "Purchased " .. def.name, "success")
+	ShopService.EquipCosmetic(player, cosmeticId)
+	return Remotes.ok({ profile = publicProfile(player) })
+end
+
+-------------------------------------------------------------------------------
+-- Lifecycle
+-------------------------------------------------------------------------------
+
+local function onCharacterAdded(player: Player, character: Model)
+	local playerData = service("PlayerDataService")
+	if not playerData then
+		return
+	end
+	if not playerData.GetProfile(player) then
+		playerData.WaitForProfile(player, 30)
+	end
+	if player.Character == character and character.Parent ~= nil then
+		ShopService.ApplyUniform(player)
+	end
+end
+
+function ShopService.Init(context)
+	ctx = context
+	VehicleBuilder = (ctx.builders and ctx.builders.VehicleBuilder) or DefaultVehicleBuilder
+end
+
+function ShopService.Start()
+	local function hook(player: Player)
+		player.CharacterAdded:Connect(function(character)
+			task.spawn(onCharacterAdded, player, character)
+		end)
+		if player.Character then
+			task.spawn(onCharacterAdded, player, player.Character)
+		end
+	end
+	Players.PlayerAdded:Connect(hook)
+	for _, player in ipairs(Players:GetPlayers()) do
+		hook(player)
+	end
+	local playerData = service("PlayerDataService")
+	if playerData then
+		playerData.ProfileLoaded:Connect(function(player)
+			if player.Character then
+				ShopService.ApplyUniform(player)
+			end
+		end)
+	end
+end
+
+return ShopService
