@@ -65,6 +65,16 @@ This is tedious; Rojo is strongly recommended.
 
 `src/shared/Config/MonetizationConfig.luau` has every paid item with `assetId = nil`. Purchases are disabled until you create the products/passes in the Creator Dashboard and paste the ids. Only cosmetics and private servers are intended for sale; nothing here gates progression.
 
+## Studio dev panel
+
+In Roblox Studio (and only there) press **F6** or click the orange **DEV** button top-right while
+playing to open a developer panel: grant cash/rep, unlock everything, skip/reset the tutorial,
+own+spawn any vehicle, teleport to the hub / any business / destination / plot, open a Lunch Rush,
+finish driver runs, fill or ready the order board, tune vehicle handling and camera values live
+while driving (then **Print snippet** and paste the block into `VehicleDefinitions`), and print a
+state report. The server side (`DevService`) creates its `DevCommand` remote only when
+`RunService:IsStudio()` is true, so none of it exists in a published game. See `docs/DEVTOOLS.md`.
+
 ## Development
 
 - `tests/run.sh` runs the offline spec suite (`DDC_TOOLS=<dir with luau binaries>`), `tools/analyze.sh` runs type analysis, `tools/build.sh` builds the place file. See `docs/TESTING.md`.

@@ -22,6 +22,11 @@ local UpgradeDefinitions = require(Definitions:WaitForChild("UpgradeDefinitions"
 local RouteGraph = require(City:WaitForChild("RouteGraph"))
 local InputActions = require(Shared:WaitForChild("InputActions"))
 
+-- Session-only handling overrides for Studio tuning (HandlingOverrides.get returns the
+-- definition's own table when nothing is overridden).
+local ClientRoot = script.Parent.Parent
+local HandlingOverrides = require(ClientRoot:WaitForChild("HandlingOverrides"))
+
 local VehicleController = {}
 
 VehicleController.MIN_DT = 1 / 240
@@ -323,7 +328,7 @@ local function resolveVehicle()
 			wheels = wheels,
 			vehicleId = vehicleId,
 			def = def,
-			handling = def.handling,
+			handling = HandlingOverrides.get(vehicleId),
 			chassisLength = def.chassisSize[3],
 		}
 	end)
@@ -812,6 +817,16 @@ function VehicleController.Init(context)
 end
 
 function VehicleController.Start()
+	-- Live tuning: a changed override for the vehicle in use swaps the handling table in place
+	-- (stepHandling is rebuilt on the next step), so acceleration / turn / ride height etc. apply
+	-- on the very next frame without re-resolving the model.
+	HandlingOverrides.Changed:Connect(function(vehicleId)
+		if refs and refs.vehicleId == vehicleId then
+			refs.handling = HandlingOverrides.get(vehicleId)
+			refs.stepHandling = nil
+		end
+	end)
+
 	ctx.state.onChange("vehicle", function(vehicle)
 		task.spawn(function()
 			if vehicle and vehicle.state and vehicle.state ~= "Despawning" then

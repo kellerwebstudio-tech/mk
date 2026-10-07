@@ -7,6 +7,7 @@
 describe("ServerBootstrap", function()
 	beforeEach(function()
 		shim.setContext("server")
+		shim.isStudio = false -- a published server: DevService must create nothing
 	end)
 
 	it("finds the Services folder beside the script, initialises every service and builds the city", function()
@@ -27,7 +28,9 @@ describe("ServerBootstrap", function()
 			end
 		end
 		expect(ready).toBeTruthy()
-		expect(ready).toMatch("13 services")
+		-- 13 documented services plus DevService (Studio-only; its Init is a no-op outside Studio).
+		expect(ready).toMatch("14 services")
+		expect(game:GetService("ReplicatedStorage").Remotes:FindFirstChild("DevCommand")).toBeNil()
 		for _, line in ipairs(shim.warnings) do
 			expect(line).never.toMatch("%[ServerBootstrap%]")
 		end

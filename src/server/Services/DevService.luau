@@ -369,6 +369,10 @@ handlers.ResetProfile = function(player)
 	if tutorial and tutorial.Restart then
 		tutorial.Restart(player)
 	end
+	-- TutorialService re-issues a withdrawn tutorial order while its step is 1..7 (OrderRemoved
+	-- hook), so the first pass above can leave a fresh tutorial order behind. The state is back at
+	-- step 0 now (no tracked order ids), so a second pass clears it without another re-issue.
+	cancelled += cancelOrders(player, nil)
 	local shop = service("ShopService")
 	if shop and shop.ApplyUniform then
 		pcall(shop.ApplyUniform, player)

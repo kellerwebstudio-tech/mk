@@ -23,7 +23,7 @@ Timing target: first delivery complete within ~3 minutes of spawning.
 13. Drive off the canal edge into water. Expected: within ~2 s the vehicle is recovered to the nearest road, you remain seated, no payout/order change.
 14. Hold R for 1 s while stuck. Expected: recovery to the nearest road point; cooldown 3 s.
 15. Reset character (Esc → Reset) while driving. Expected: you respawn at the hub; the vehicle stays parked where it was; packages stay with your orders (re-attached on your back); you can walk back or open Menu → Spawn vehicle to bring it to you.
-16. Scooter and van (grant cash/rep via the command bar for testing: see `docs/TESTING.md` "Studio cheats"). Expected: scooter is faster with wider turns; van is heavier with a visibly larger turning circle; the van cannot be routed through alleys (markers use roads only); each vehicle's camera distance differs.
+16. Scooter and van (open the Studio dev panel with F6 or the DEV button and use **Own + spawn Scooter / Van**, or **Unlock all**; see `docs/DEVTOOLS.md`). Expected: scooter is faster with wider turns; van is heavier with a visibly larger turning circle; the van cannot be routed through alleys (markers use roads only); each vehicle's camera distance differs.
 17. Second player tries to sit on your vehicle (walk into the seat / press F near it). Expected: no prompt for them; the server ejects them if they somehow sit; your controls are unaffected.
 
 ## C. Orders and capacity

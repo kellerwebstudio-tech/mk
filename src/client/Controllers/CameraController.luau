@@ -17,6 +17,10 @@ local MathUtil = require(Util:WaitForChild("MathUtil"))
 local InputActions = require(Shared:WaitForChild("InputActions"))
 local VehicleDefinitions = require(Shared:WaitForChild("Definitions"):WaitForChild("VehicleDefinitions"))
 
+-- Session-only handling overrides for Studio tuning (same table as the definition when none).
+local ClientRoot = script.Parent.Parent
+local HandlingOverrides = require(ClientRoot:WaitForChild("HandlingOverrides"))
+
 local CameraController = {}
 
 CameraController.BASE_FOV = 70
@@ -221,6 +225,12 @@ end
 -- Per-frame update
 -------------------------------------------------------------------------------
 
+-- Handling (cameraDistance / cameraHeight / cameraLookAhead / fovSpeedBoost) comes from the
+-- VehicleController's resolved table (already override-aware) or straight from HandlingOverrides;
+-- the cached fallback is dropped on HandlingOverrides.Changed so a tweak shows on the next frame.
+local fallbackHandling: any = nil
+local fallbackVehicleId: string? = nil
+
 local function handlingFor(): any
 	local vehicleController = controller("VehicleController")
 	local handling = vehicleController and type(vehicleController.GetHandling) == "function" and vehicleController.GetHandling() or nil
@@ -228,8 +238,13 @@ local function handlingFor(): any
 		return handling
 	end
 	local vehicle = ctx.state.get("vehicle")
-	local def = vehicle and vehicle.vehicleId and VehicleDefinitions.get(vehicle.vehicleId) or VehicleDefinitions.Vehicles.Bicycle
-	return def.handling
+	local vehicleId = vehicle and vehicle.vehicleId
+	local def = vehicleId and VehicleDefinitions.get(vehicleId) or VehicleDefinitions.Vehicles.Bicycle
+	if fallbackHandling == nil or fallbackVehicleId ~= def.id then
+		fallbackVehicleId = def.id
+		fallbackHandling = HandlingOverrides.get(def.id)
+	end
+	return fallbackHandling
 end
 
 local function chassisFor(): BasePart?
@@ -393,6 +408,11 @@ end
 function CameraController.Start()
 	ctx.state.onChange("settings", function(newSettings)
 		CameraController.ApplySettings(newSettings)
+	end)
+	HandlingOverrides.Changed:Connect(function(vehicleId)
+		if vehicleId == fallbackVehicleId then
+			fallbackHandling = nil
+		end
 	end)
 
 	UserInputService.InputBegan:Connect(onInputBegan)
