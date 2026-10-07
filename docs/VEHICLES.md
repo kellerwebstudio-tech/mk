@@ -67,5 +67,19 @@ Throttle/steer: `VehicleSeat.ThrottleFloat/SteerFloat` (W/S/A/D, arrows, touch t
 ## Collision groups
 `Vehicles` vs `Vehicles`: off. `Vehicles` vs `Players`: off. `Vehicles` vs `NPCs`: off. `Packages` vs all: off. Characters are put in `Players` on spawn by VehicleService.
 
+## Custom meshes
+The three vehicles can swap their generated block bodies for the imported Meshy meshes in `assets/meshes/<VehicleId>/`
+(already converted to the game's conventions: studs, +X right, +Y up, -Z forward, origin at the chassis centre
+`handling.rideHeight` above the ground). Import each `<VehicleId>_Body.obj` with Studio's 3D Importer and paste the
+resulting `MeshId` / `TextureID` numbers into `Shared/Config/MeshAssets.luau`; a `meshId` of 0 keeps the generated
+parts. With ids set, `VehicleBuilder` builds the body as one `MeshBody` MeshPart welded to `BodyRoot` (no `PaintSlot`,
+so paint cosmetics do not apply; the texture carries the look), the `Wheels` folder stays empty until wheel meshes are
+configured (they are baked into the body for now, so wheel spin/steer cosmetics are a no-op) and the seat, cargo slots,
+chassis box and dismount point come from `VehicleDefinitions[id].mesh` through `VehicleDefinitions.getEffective`.
+Nothing in the driving model changes: the chassis is still the invisible physics box and the controller never looks at
+the body parts. A mesh that fails to load warns once and that vehicle falls back to the generated parts for the session.
+The shop preview clones the server-published display from `ReplicatedStorage.SharedAssets.VehicleDisplays`.
+Details: `docs/ARCHITECTURE.md` section 12, "Custom meshes".
+
 ## Cosmetic sync for other clients
 Non-owner clients spin the wheels of nearby vehicles (≤ 200 studs) from `chassis.AssemblyLinearVelocity` projected on the chassis look vector and steer them from the lateral velocity sign; no remotes are used.

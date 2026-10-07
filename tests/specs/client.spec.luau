@@ -694,6 +694,40 @@ describe("VehicleController runtime", function()
 		expect(VehicleController.GetSpeed()).toBe(0)
 	end)
 
+	it("drives a mesh vehicle (empty Wheels folder) without warnings and still leans via BodyMotor", function()
+		local ctx, _, ClientState = setup({ "InputController", "VehicleController" })
+		local MeshAssets = shim.requirePath("ReplicatedStorage/Shared/Config/MeshAssets")
+		MeshAssets.Vehicles.Scooter.body.meshId = 7001
+		MeshAssets.Vehicles.Scooter.body.textureId = 7002
+		local VehicleBuilder = require(svc("ServerScriptService").DeliveryDash.Builders.VehicleBuilder)
+		local model = VehicleBuilder.build("Scooter", 1, nil)
+		MeshAssets.Vehicles.Scooter.body.meshId = 0
+		MeshAssets.Vehicles.Scooter.body.textureId = 0
+		expect(#model.Wheels:GetChildren()).toBe(0)
+		expect(model.Body:FindFirstChild("MeshBody")).toBeTruthy()
+		model:PivotTo(CFrame.new(0, 1.5, 0))
+		model.Parent = workspaceFolder("Runtime")
+		local character = spawnAt(0, 0)
+		local seat = model.Seat
+		seat:Sit(character.Humanoid)
+		seat.ThrottleFloat = 1
+		seat.SteerFloat = 1
+		ClientState.set("vehicle", { state = "Driving", vehicleId = "Scooter", model = model })
+		shim.advance(0.5)
+		local VehicleController = ctx.controllers.VehicleController
+		expect(VehicleController.IsActive()).toBe(true)
+		expect(VehicleController.GetSpeed()).toBeGreaterThan(1)
+		-- Lean (two-wheeler) still works through BodyMotor; a right turn rolls about Z.
+		local _, _, roll = model.BodyRoot.BodyMotor.Transform:ToEulerAnglesXYZ()
+		expect(math.abs(roll)).toBeGreaterThan(0.001)
+		shim.advance(1)
+		expect(#shim.warnings).toBe(0)
+		ClientState.set("vehicle", { state = "Parked", vehicleId = "Scooter", model = model })
+		shim.advance(0.1)
+		expect(VehicleController.IsActive()).toBe(false)
+		expect(#shim.warnings).toBe(0)
+	end)
+
 	it("does not run when the local humanoid is not in the vehicle seat", function()
 		local ctx, _, ClientState = setup({ "InputController", "VehicleController" })
 		spawnAt(0, 0)

@@ -9,12 +9,19 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Definitions = Shared:WaitForChild("Definitions")
+local Config = Shared:WaitForChild("Config")
 local VehicleDefinitions = require(Definitions:WaitForChild("VehicleDefinitions"))
 local CosmeticDefinitions = require(Definitions:WaitForChild("CosmeticDefinitions"))
+local MeshAssets = require(Config:WaitForChild("MeshAssets"))
 
 local CosmeticsController = {}
 
 CosmeticsController.SMALL_PART_SIZE = 1
+-- Mesh vehicles: the server publishes a cosmetic copy under
+-- ReplicatedStorage.SharedAssets.VehicleDisplays.<VehicleId> (clients cannot create MeshParts from
+-- ids). How long BuildDisplayVehicle waits for it before falling back to the generated preview.
+CosmeticsController.DISPLAYS_FOLDER = "VehicleDisplays"
+CosmeticsController.DISPLAY_WAIT = 1
 
 export type RGB = { number }
 export type Colors = { Primary: RGB, Accent: RGB, Decal: RGB }
@@ -124,9 +131,53 @@ end
 	anchored, no constraints, and parents it to `parent` (a ViewportFrame/WorldModel or nil).
 	`colors` overrides the profile paint. The pivot is the chassis centre, rideHeight above y = 0.
 ]]
+-- The server-published display template for a mesh vehicle, or nil (not a mesh vehicle, not
+-- published yet after DISPLAY_WAIT seconds, or the server fell back to generated parts).
+local function findPublishedDisplay(vehicleId: string): Model?
+	if not MeshAssets.hasBody(vehicleId) then
+		return nil
+	end
+	local sharedAssets = ReplicatedStorage:FindFirstChild("SharedAssets")
+	if not sharedAssets then
+		return nil
+	end
+	local displays = sharedAssets:FindFirstChild(CosmeticsController.DISPLAYS_FOLDER)
+		or sharedAssets:WaitForChild(CosmeticsController.DISPLAYS_FOLDER, CosmeticsController.DISPLAY_WAIT)
+	if not displays then
+		return nil
+	end
+	local template = displays:FindFirstChild(vehicleId) or displays:WaitForChild(vehicleId, CosmeticsController.DISPLAY_WAIT)
+	if template and template:IsA("Model") then
+		return template
+	end
+	return nil
+end
+
 function CosmeticsController.BuildDisplayVehicle(vehicleId: string, parent: Instance?, colors: Colors?): Model
 	local def = VehicleDefinitions.get(vehicleId) or VehicleDefinitions.Vehicles.Bicycle
 	local resolved = colors or CosmeticsController.GetVehicleColors(def.id)
+
+	-- Mesh vehicle: clone the server's display (texture carries the look; PaintSlot parts, if any,
+	-- still get the player's colours).
+	local published = findPublishedDisplay(def.id)
+	if published then
+		local clone = published:Clone()
+		clone.Name = "VehicleDisplay"
+		clone:SetAttribute("VehicleId", def.id)
+		clone:SetAttribute("Display", true)
+		for _, part in ipairs(clone:GetDescendants()) do
+			if part:IsA("BasePart") then
+				part.Anchored = true
+				part.CanCollide = false
+			end
+		end
+		CosmeticsController.ApplyColors(clone, resolved)
+		if parent then
+			clone.Parent = parent
+		end
+		return clone
+	end
+
 	local palette = {
 		Primary = rgb(resolved.Primary or def.defaultColors.Primary),
 		Accent = rgb(resolved.Accent or def.defaultColors.Accent),
@@ -176,7 +227,7 @@ end
 -- Recolours PaintSlot parts of a display (or any) vehicle model.
 function CosmeticsController.ApplyColors(model: Model, colors: Colors)
 	for _, descendant in ipairs(model:GetDescendants()) do
-		if descendant:IsA("BasePart") then
+		if descendant:IsA("BasePart") and not descendant:IsA("MeshPart") then
 			local slot = descendant:GetAttribute("PaintSlot")
 			if type(slot) == "string" then
 				local color = (colors :: any)[slot]
@@ -191,6 +242,12 @@ end
 -- Extents of a display model (for framing a ViewportFrame camera).
 function CosmeticsController.GetDisplayRadius(vehicleId: string): number
 	local def = VehicleDefinitions.get(vehicleId) or VehicleDefinitions.Vehicles.Bicycle
+	local mesh = def.mesh
+	if mesh and MeshAssets.hasBody(def.id) then
+		-- Mesh body: its bounding box (plus offset) bounds the whole vehicle.
+		local size = mesh.body.size
+		return vec(mesh.body.offset).Magnitude + math.max(size[1], size[2], size[3]) * 0.75
+	end
 	local size = def.chassisSize
 	local radius = math.max(size[1], size[3]) * 0.75
 	for _, spec in ipairs(def.visual.parts) do

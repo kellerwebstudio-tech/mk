@@ -19,6 +19,7 @@ local City = Shared:WaitForChild("City")
 local MathUtil = require(Util:WaitForChild("MathUtil"))
 local VehicleDefinitions = require(Definitions:WaitForChild("VehicleDefinitions"))
 local UpgradeDefinitions = require(Definitions:WaitForChild("UpgradeDefinitions"))
+local MeshAssets = require(Shared:WaitForChild("Config"):WaitForChild("MeshAssets"))
 local RouteGraph = require(City:WaitForChild("RouteGraph"))
 local InputActions = require(Shared:WaitForChild("InputActions"))
 
@@ -329,7 +330,7 @@ local function resolveVehicle()
 			vehicleId = vehicleId,
 			def = def,
 			handling = HandlingOverrides.get(vehicleId),
-			chassisLength = def.chassisSize[3],
+			chassisLength = VehicleDefinitions.getEffective(vehicleId, MeshAssets.hasBody(vehicleId)).chassisSize[3],
 		}
 	end)
 	resolving = false

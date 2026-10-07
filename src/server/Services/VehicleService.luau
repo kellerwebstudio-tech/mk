@@ -35,6 +35,7 @@ local SPAWN_ROAD_RANGE = 80
 local GROUND_RAY_UP = 4
 local GROUND_RAY_LENGTH = 80
 local DISMOUNT_RAISE = 3
+local DISPLAYS_FOLDER = "VehicleDisplays"
 
 local VehicleService = {}
 
@@ -216,6 +217,16 @@ end
 
 local function definitionFor(record: VehicleRecord)
 	return VehicleDefinitions.get(record.vehicleId) or VehicleDefinitions.Vehicles.Bicycle
+end
+
+-- True while the builder uses the imported mesh body for this vehicle (MeshAssets ids set and the
+-- mesh loaded); decides which seat/cargo/dismount offsets apply (VehicleDefinitions.getEffective).
+local function usesMesh(vehicleId: string): boolean
+	if VehicleBuilder and type(VehicleBuilder.usesMesh) == "function" then
+		local okCall, result = pcall(VehicleBuilder.usesMesh, vehicleId)
+		return okCall and result == true
+	end
+	return false
 end
 
 local function firePublicState(player: Player, state: string, record: VehicleRecord?)
@@ -503,7 +514,8 @@ local function doDismount(player: Player, record: VehicleRecord, moveCharacter: 
 		if attachment and attachment:IsA("Attachment") then
 			localOffset = attachment.Position
 		else
-			local o = def.dismountOffset
+			-- Same source of truth as the builder: mesh offsets while the mesh body is in use.
+			local o = VehicleDefinitions.getEffective(def.id, usesMesh(def.id)).dismountOffset
 			localOffset = Vector3.new(o[1], o[2], o[3])
 		end
 		local worldPosition = record.chassis.CFrame:PointToWorldSpace(localOffset) + Vector3.new(0, DISMOUNT_RAISE, 0)
@@ -1016,7 +1028,63 @@ function VehicleService.Init(context)
 	setCollidable("Packages", "Default", false)
 end
 
+-------------------------------------------------------------------------------
+-- Shop preview displays for mesh vehicles
+-------------------------------------------------------------------------------
+
+-- Clients cannot create MeshParts from asset ids, so for every vehicle that uses a mesh the server
+-- publishes one cosmetic display model (VehicleBuilder.buildDisplay, anchored) under
+-- ReplicatedStorage.SharedAssets.VehicleDisplays.<VehicleId>; CosmeticsController clones it for
+-- the shop preview. Vehicles on generated parts get no entry (the client builds those itself).
+-- Yields (mesh templates load here, warming the builder cache before the first spawn). Safe to
+-- call again: existing entries are replaced.
+function VehicleService.PublishDisplays(): Folder?
+	if not VehicleBuilder or type(VehicleBuilder.buildDisplay) ~= "function" or type(VehicleBuilder.usesMesh) ~= "function" then
+		return nil
+	end
+	local sharedAssets = ReplicatedStorage:FindFirstChild("SharedAssets")
+	if not sharedAssets then
+		sharedAssets = Instance.new("Folder")
+		sharedAssets.Name = "SharedAssets"
+		sharedAssets.Parent = ReplicatedStorage
+	end
+	local displays = sharedAssets:FindFirstChild(DISPLAYS_FOLDER)
+	for _, vehicleId in ipairs(VehicleDefinitions.Order) do
+		local okPublish, err = pcall(function()
+			if type(VehicleBuilder.warmMeshCache) == "function" then
+				VehicleBuilder.warmMeshCache(vehicleId)
+			end
+			if not VehicleBuilder.usesMesh(vehicleId) then
+				return
+			end
+			local def = VehicleDefinitions.get(vehicleId)
+			local display: Model = VehicleBuilder.buildDisplay(vehicleId, def and def.defaultColors or nil)
+			if display:GetAttribute("UsesMesh") ~= true then
+				-- The mesh did not load (builder fell back): nothing the client cannot build itself.
+				display:Destroy()
+				return
+			end
+			if not displays then
+				displays = Instance.new("Folder")
+				displays.Name = DISPLAYS_FOLDER
+				displays.Parent = sharedAssets
+			end
+			local previous = displays:FindFirstChild(vehicleId)
+			if previous then
+				previous:Destroy()
+			end
+			display.Name = vehicleId
+			display.Parent = displays
+		end)
+		if not okPublish then
+			warn("[VehicleService] display publish failed for " .. vehicleId .. ": " .. tostring(err))
+		end
+	end
+	return displays
+end
+
 function VehicleService.Start()
+	task.spawn(VehicleService.PublishDisplays)
 	Players.PlayerAdded:Connect(onPlayerAdded)
 	Players.PlayerRemoving:Connect(onPlayerRemoving)
 	for _, player in ipairs(Players:GetPlayers()) do

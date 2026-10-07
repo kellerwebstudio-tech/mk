@@ -64,6 +64,36 @@ export type CargoLayout = {
 	spacingZ: number,
 }
 
+-- Optional custom-mesh block (applies only while MeshAssets.hasBody(id); see Config/MeshAssets).
+-- body.size/offset come from assets/meshes/<id>/meta.json (bounding box of the imported OBJ, in
+-- studs, relative to the chassis centre). The offsets override the generated-part values because
+-- the mesh's saddle / cargo rack / cab sit elsewhere than the block build.
+export type MeshWheelSpec = {
+	name: string,
+	radius: number,
+	offset: { number },
+	steerable: boolean,
+}
+
+export type MeshSpec = {
+	body: { size: { number }, offset: { number } },
+	seatOffset: { number }?,
+	cargoOffset: { number }?,
+	cargoLayout: CargoLayout?,
+	chassisSize: { number }?,
+	dismountOffset: { number }?,
+	wheels: { MeshWheelSpec },
+}
+
+-- The placement values a builder/service needs, resolved for generated parts or for the mesh.
+export type EffectiveLayout = {
+	seatOffset: { number },
+	cargoOffset: { number },
+	cargoLayout: CargoLayout,
+	chassisSize: { number },
+	dismountOffset: { number },
+}
+
 export type VehicleDefinition = {
 	id: string,
 	displayName: string,
@@ -81,6 +111,7 @@ export type VehicleDefinition = {
 	engineSound: string?,
 	defaultColors: { Primary: { number }, Accent: { number }, Decal: { number } },
 	visual: { parts: { VisualPart }, wheels: { WheelSpec } },
+	mesh: MeshSpec?,
 	order: number,
 }
 
@@ -184,6 +215,14 @@ VehicleDefinitions.Vehicles = {
 				{ name = "RearWheel", radius = 1.1, width = 0.3, offset = { 0, -0.4, 2.0 }, steerable = false, color = RUBBER },
 			},
 		},
+		-- Imported Meshy bicycle (assets/meshes/Bicycle). Used only while MeshAssets.hasBody("Bicycle").
+		mesh = {
+			body = { size = { 2.682, 3.647, 6.2 }, offset = { 0, 0.323, 0 } },
+			seatOffset = { 0, 1.6, 0.5 },
+			cargoOffset = { 0, 2.45, 2.3 },
+			cargoLayout = { columns = 1, rows = 2, spacingX = 0, spacingY = 0.85, spacingZ = 0 },
+			wheels = {}, -- baked into the body mesh for now
+		},
 	},
 
 	Scooter = {
@@ -252,6 +291,14 @@ VehicleDefinitions.Vehicles = {
 				{ name = "FrontWheel", radius = 0.9, width = 0.5, offset = { 0, -0.6, -2.4 }, steerable = true, color = RUBBER },
 				{ name = "RearWheel", radius = 0.9, width = 0.5, offset = { 0, -0.6, 2.2 }, steerable = false, color = RUBBER },
 			},
+		},
+		-- Imported Meshy scooter (assets/meshes/Scooter). Used only while MeshAssets.hasBody("Scooter").
+		mesh = {
+			body = { size = { 2.985, 4.273, 6.4 }, offset = { 0, 0.637, 0 } },
+			seatOffset = { 0, 0.95, 0.3 },
+			cargoOffset = { 0, 2.8, 1.6 },
+			cargoLayout = { columns = 1, rows = 2, spacingX = 0, spacingY = 0.85, spacingZ = 0 },
+			wheels = {},
 		},
 	},
 
@@ -336,11 +383,54 @@ VehicleDefinitions.Vehicles = {
 				{ name = "RearWheelR", radius = 1.3, width = 0.9, offset = { 2.5, -1.1, 3.6 }, steerable = false, color = RUBBER },
 			},
 		},
+		-- Imported Meshy van (assets/meshes/Van). Used only while MeshAssets.hasBody("Van").
+		mesh = {
+			body = { size = { 7.228, 7.251, 13.5 }, offset = { 0, 1.226, 0 } },
+			seatOffset = { -1.5, 0.4, -4.3 },
+			cargoOffset = { -0.8, -0.3, 4.0 },
+			cargoLayout = { columns = 2, rows = 3, spacingX = 1.6, spacingY = 0.85, spacingZ = -1.3 },
+			chassisSize = { 6.6, 3.0, 13.5 },
+			dismountOffset = { -5.2, -2.4, -4.3 },
+			wheels = {},
+		},
 	},
 } :: { [string]: VehicleDefinition }
 
 function VehicleDefinitions.get(vehicleId: string): VehicleDefinition?
 	return VehicleDefinitions.Vehicles[vehicleId]
+end
+
+-- Seat / cargo / chassis / dismount values for a vehicle: the generated-part numbers, or, when
+-- `useMesh` is true and the definition has a `mesh` block, the mesh overrides merged over them.
+-- Callers pass useMesh = MeshAssets.hasBody(id) (VehicleBuilder.usesMesh on the server, which also
+-- knows about load failures) so every reader of these offsets agrees with the built model.
+-- The result is a fresh table; the definition is never mutated.
+function VehicleDefinitions.getEffective(vehicleId: string, useMesh: boolean): EffectiveLayout
+	local def = VehicleDefinitions.Vehicles[vehicleId]
+	assert(def ~= nil, "Unknown vehicle id " .. tostring(vehicleId))
+	local mesh = if useMesh then def.mesh else nil
+	local function pick<T>(override: T?, base: T): T
+		if override ~= nil then
+			return override :: T
+		end
+		return base
+	end
+	if mesh == nil then
+		return {
+			seatOffset = def.seatOffset,
+			cargoOffset = def.cargoOffset,
+			cargoLayout = def.cargoLayout,
+			chassisSize = def.chassisSize,
+			dismountOffset = def.dismountOffset,
+		}
+	end
+	return {
+		seatOffset = pick(mesh.seatOffset, def.seatOffset),
+		cargoOffset = pick(mesh.cargoOffset, def.cargoOffset),
+		cargoLayout = pick(mesh.cargoLayout, def.cargoLayout),
+		chassisSize = pick(mesh.chassisSize, def.chassisSize),
+		dismountOffset = pick(mesh.dismountOffset, def.dismountOffset),
+	}
 end
 
 function VehicleDefinitions.maskAllows(edgeMask: number, vehicleMask: number): boolean

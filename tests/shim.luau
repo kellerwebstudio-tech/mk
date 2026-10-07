@@ -437,7 +437,7 @@ end
 
 local Vector3, Vector2, CFrame, Color3, BrickColor, UDim, UDim2, Rect, Random, Region3, Ray, Font
 local NumberRange, NumberSequence, NumberSequenceKeypoint, ColorSequence, ColorSequenceKeypoint
-local TweenInfo, PhysicalProperties, RaycastParams, OverlapParams, DateTime
+local TweenInfo, PhysicalProperties, RaycastParams, OverlapParams, DateTime, Content
 local Enum -- defined in section 5
 
 local function checkNum(v, what, level)
@@ -1422,6 +1422,34 @@ do -- Random: deterministic xorshift-style generator
 		end,
 	}
 	shim._random = Random.new(42)
+end
+
+do -- Content (asset references; typeof == "Content")
+	-- SourceType resolves lazily (Enum is built in section 5, after this block).
+	local CMT = { __type = "Content" }
+	CMT.__index = function(c, k)
+		if k == "SourceType" then return Enum and Enum.ContentSourceType[rawget(c, "_sourceType")] or nil end
+		return nil
+	end
+	CMT.__tostring = function(c) return "Content(" .. tostring(rawget(c, "Uri") or (rawget(c, "Object") and "Object") or "none") .. ")" end
+	CMT.__eq = function(a, b) return rawget(a, "Uri") == rawget(b, "Uri") and rawget(a, "Object") == rawget(b, "Object") and rawget(a, "AssetId") == rawget(b, "AssetId") end
+	local function makeContent(uri, object, assetId, sourceType)
+		return setmetatable({ Uri = uri, Object = object, AssetId = assetId, _sourceType = sourceType }, CMT)
+	end
+	Content = {
+		none = makeContent(nil, nil, nil, "None"),
+		fromUri = function(uri)
+			if type(uri) ~= "string" then fail(2, "Content.fromUri expects a string, got %s", nativeTypeof(uri)) end
+			return makeContent(uri, nil, tonumber(string.match(uri, "(%d+)%s*$")), "Uri")
+		end,
+		fromAssetId = function(id)
+			if type(id) ~= "number" then fail(2, "Content.fromAssetId expects a number, got %s", nativeTypeof(id)) end
+			return makeContent("rbxassetid://" .. tostring(math.floor(id)), nil, math.floor(id), "Uri")
+		end,
+		fromObject = function(object)
+			return makeContent(nil, object, nil, "Object")
+		end,
+	}
 end
 
 do -- RaycastParams / OverlapParams (mutable)
@@ -5164,7 +5192,51 @@ defclass("SocialService", "Instance", { events = { "GameInvitePromptClosed", "Pr
 defclass("AnalyticsService", "Instance", { defaults = { _events = function() return {} end }, methods = { LogCustomEvent = function(self, ...) table.insert(rawProp(self, "_events"), { "Custom", ... }) end, LogEconomyEvent = function(self, ...) table.insert(rawProp(self, "_events"), { "Economy", ... }) end, LogFunnelStepEvent = function(self, ...) table.insert(rawProp(self, "_events"), { "Funnel", ... }) end, LogOnboardingFunnelStepEvent = function(self, ...) table.insert(rawProp(self, "_events"), { "Onboarding", ... }) end, LogProgressionEvent = function(self, ...) table.insert(rawProp(self, "_events"), { "Progression", ... }) end, FireEvent = function() end, FireCustomEvent = function() end, FireInGameEconomyEvent = function() end, FireLogEvent = function() end, FirePlayerProgressionEvent = function() end } })
 defclass("Stats", "Instance", { defaults = { ContactsCount = 0, DataReceiveKbps = 0, DataSendKbps = 0, HeartbeatTimeMs = 0, InstanceCount = 0, MovingPrimitivesCount = 0, PhysicsReceiveKbps = 0, PhysicsSendKbps = 0, PhysicsStepTimeMs = 0, PrimitivesCount = 0 }, methods = { GetTotalMemoryUsageMb = function() return 100 end, GetMemoryUsageMbForTag = function() return 1 end } })
 defclass("InsertService", "Instance", { methods = { LoadAsset = function() fail(2, "InsertService:LoadAsset is not available in the offline harness") end, LoadAssetVersion = function() fail(2, "InsertService:LoadAssetVersion is not available in the offline harness") end, CreateMeshPartAsync = function() return new("MeshPart") end } })
-defclass("AssetService", "Instance", { methods = { CreateEditableMeshAsync = function() return nil end, CreateMeshPartAsync = function() return new("MeshPart") end, GetGamePlacesAsync = function() return { GetCurrentPage = function() return {} end, IsFinished = true, AdvanceToNextPageAsync = function() end } end } })
+-- AssetService: CreateMeshPartAsync(content, options) returns a MeshPart whose MeshId comes from the
+-- Content (Content.fromAssetId / fromUri), Size (1, 1, 1) and the requested fidelities; every call is
+-- recorded in shim.assetService.calls ({ method, content, options, meshId }). The next
+-- shim.assetService.failNextCalls calls raise "CreateMeshPartAsync failed (simulated)" instead.
+shim.assetService = { calls = {}, failNextCalls = 0 }
+local function contentAssetId(content)
+	if type(content) == "table" then
+		if type(content.AssetId) == "number" then return content.AssetId end
+		if type(content.Uri) == "string" then
+			local n = tonumber(string.match(content.Uri, "(%d+)%s*$"))
+			if n then return n end
+		end
+	elseif type(content) == "string" then
+		local n = tonumber(string.match(content, "(%d+)%s*$"))
+		if n then return n end
+	elseif type(content) == "number" then
+		return content
+	end
+	return nil
+end
+defclass("AssetService", "Instance", { methods = {
+	CreateEditableMeshAsync = function() return nil end,
+	CreateMeshPartAsync = function(self, content, options)
+		local a = shim.assetService
+		local assetId = contentAssetId(content)
+		table.insert(a.calls, { method = "CreateMeshPartAsync", content = content, options = options, meshId = assetId })
+		if (a.failNextCalls or 0) > 0 then
+			a.failNextCalls -= 1
+			fail(2, "CreateMeshPartAsync failed (simulated)")
+		end
+		if type(content) ~= "table" or getmetatable(content) == nil or rawget(getmetatable(content), "__type") ~= "Content" then
+			fail(2, "AssetService:CreateMeshPartAsync expects a Content (use Content.fromAssetId), got %s", nativeTypeof(content))
+		end
+		local part = new("MeshPart")
+		setProp(part, "Size", Vector3.new(1, 1, 1))
+		if assetId then setProp(part, "MeshId", "rbxassetid://" .. tostring(assetId)) elseif type(content.Uri) == "string" then setProp(part, "MeshId", content.Uri) end
+		if type(options) == "table" then
+			if options.CollisionFidelity ~= nil then setProp(part, "CollisionFidelity", options.CollisionFidelity) end
+			if options.RenderFidelity ~= nil then setProp(part, "RenderFidelity", options.RenderFidelity) end
+			if options.FluidFidelity ~= nil then setProp(part, "FluidFidelity", options.FluidFidelity) end
+		end
+		return part
+	end,
+	GetGamePlacesAsync = function() return { GetCurrentPage = function() return {} end, IsFinished = true, AdvanceToNextPageAsync = function() end } end,
+} })
 defclass("ScriptContext", "Instance", { events = { "Error" }, methods = { SetTimeout = function() end } })
 defclass("ProximityPromptService", "Instance", { defaults = { Enabled = true, MaxPromptsVisible = 16 }, events = { "PromptTriggered", "PromptTriggerEnded", "PromptShown", "PromptHidden", "PromptButtonHoldBegan", "PromptButtonHoldEnded" } })
 defclass("UserGameSettings", "Instance", { defaults = { CameraMode = NIL, ComputerCameraMovementMode = NIL, ComputerMovementMode = NIL, ControlMode = NIL, GamepadCameraSensitivity = 1, MouseSensitivity = 1, RotationType = NIL, SavedQualityLevel = NIL, TouchCameraMovementMode = NIL, TouchMovementMode = NIL, VignetteEnabled = false, Fullscreen = false, HasEverUsedVR = false, MasterVolume = 1, ReducedMotion = false, PreferredTransparency = 1, PreferredTextSize = NIL }, events = { "FullscreenChanged", "StudioThemeChanged" }, methods = { GetCameraYInvertValue = function() return 1 end, InFullScreen = function() return false end, InStudioMode = function() return false end, SetCameraYInvertVisible = function() end, SetGamepadCameraSensitivityVisible = function() end, GetTutorialState = function() return false end, SetTutorialState = function() end } })
@@ -5515,6 +5587,7 @@ do
 	g.PhysicalProperties = PhysicalProperties
 	g.RaycastParams = RaycastParams
 	g.OverlapParams = OverlapParams
+	g.Content = Content
 	g.Random = Random
 	g.Region3 = Region3
 	g.Ray = Ray
@@ -5579,6 +5652,7 @@ function shim.reset()
 	shim.remoteLog = {}
 	shim._requireStack = {}
 	shim.datastore = { data = {}, failNextCalls = 0, latency = 0, calls = {} }
+	shim.assetService = { calls = {}, failNextCalls = 0 }
 	local simulate = shim.marketplace.simulatePurchase
 	shim.marketplace = { prompts = {}, ownedPasses = {}, productInfo = {}, simulatePurchase = simulate }
 	shim.input.lastInputType = nil
