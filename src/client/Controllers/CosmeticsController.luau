@@ -20,6 +20,10 @@ CosmeticsController.SMALL_PART_SIZE = 1
 -- Mesh vehicles: the server publishes a cosmetic copy under
 -- ReplicatedStorage.SharedAssets.VehicleDisplays.<VehicleId> (clients cannot create MeshParts from
 -- ids). How long BuildDisplayVehicle waits for it before falling back to the generated preview.
+-- For an embedded vehicle (MeshAssets.isEmbedded) the published display holds the invisible
+-- "MeshBody" placeholder (tag "EmbeddedMeshBody"); the clone keeps the tag, so
+-- EmbeddedMeshController dresses it with the rebuilt mesh as soon as the preview is parented
+-- (or when the mesh finishes decoding: it re-dresses every tagged placeholder on Loaded).
 CosmeticsController.DISPLAYS_FOLDER = "VehicleDisplays"
 CosmeticsController.DISPLAY_WAIT = 1
 
@@ -134,7 +138,7 @@ end
 -- The server-published display template for a mesh vehicle, or nil (not a mesh vehicle, not
 -- published yet after DISPLAY_WAIT seconds, or the server fell back to generated parts).
 local function findPublishedDisplay(vehicleId: string): Model?
-	if not MeshAssets.hasBody(vehicleId) then
+	if not MeshAssets.usesCustomMesh(vehicleId) then
 		return nil
 	end
 	local sharedAssets = ReplicatedStorage:FindFirstChild("SharedAssets")
@@ -169,6 +173,13 @@ function CosmeticsController.BuildDisplayVehicle(vehicleId: string, parent: Inst
 			if part:IsA("BasePart") then
 				part.Anchored = true
 				part.CanCollide = false
+			end
+		end
+		-- Embedded vehicle: drop any mesh a previous dressing left on the template (the controller
+		-- attaches a fresh clone for this preview once it is parented).
+		for _, part in ipairs(clone:GetDescendants()) do
+			if part.Name == "EmbeddedMesh" and part.Parent and part.Parent.Name == "MeshBody" then
+				part:Destroy()
 			end
 		end
 		CosmeticsController.ApplyColors(clone, resolved)
@@ -243,8 +254,8 @@ end
 function CosmeticsController.GetDisplayRadius(vehicleId: string): number
 	local def = VehicleDefinitions.get(vehicleId) or VehicleDefinitions.Vehicles.Bicycle
 	local mesh = def.mesh
-	if mesh and MeshAssets.hasBody(def.id) then
-		-- Mesh body: its bounding box (plus offset) bounds the whole vehicle.
+	if mesh and MeshAssets.usesCustomMesh(def.id) then
+		-- Mesh body (uploaded or embedded): its bounding box (plus offset) bounds the whole vehicle.
 		local size = mesh.body.size
 		return vec(mesh.body.offset).Magnitude + math.max(size[1], size[2], size[3]) * 0.75
 	end

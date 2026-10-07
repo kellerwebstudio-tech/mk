@@ -8,6 +8,7 @@ Everything runs without Roblox Studio. Three scripts, all honouring `DDC_TOOLS` 
 | `bash tests/run.sh [pattern]` | `python3 tools/bundle.py` → `tests/build/all.luau`, then runs it with `luau`. Exit code is non-zero if any spec fails. `pattern` is a Lua pattern matched against `describe > it` names. |
 | `bash tools/analyze.sh` | `rojo sourcemap` + `luau-lsp analyze` over `src/` with the Roblox API types (`tools/.cache/globalTypes.d.luau`, copied from `DDC_TOOLS` or downloaded). `tests/**` is ignored. |
 | `bash tools/build.sh` | `rojo build` → `build/DeliveryDashCity.rbxl`. |
+| `python3 -I tools/make_codec_fixtures.py` | Regenerates `tests/fixtures/CodecVectors.luau`, the byte-exact test vectors for the pure-Luau codecs (`Util/Base64`, `Util/Inflate`, `Util/PngDecoder`, `MeshData/MeshPack`). Needs numpy + PIL (it imports `tools/mesh_embed.py` for the DDCM packer). Re-run it after `tools/mesh_embed.py` changes the embedded vehicle data: the `embedded` section holds checksums of the real data modules. |
 
 Example: `DDC_TOOLS=/path/to/tools bash tests/run.sh "OrderService"`.
 
@@ -80,13 +81,49 @@ Useful `shim` helpers:
 | `shim.addPlayer(name, userId)`, `shim.spawnCharacter(player, cframe?)`, `shim.removePlayer(player)` | Players and R15-like characters (HumanoidRootPart, Humanoid+Animator, Head, Upper/LowerTorso, limbs, PrimaryPart set). |
 | `shim.datastore.data[name][key]`, `.failNextCalls = n`, `.latency = s`, `.calls` | In-memory DataStores. The next `n` calls raise `DataStore request failed (simulated)`; latency advances the clock. |
 | `shim.setRaycast(fn)` | Replace `workspace:Raycast` (default: hit the y=0 plane going down, `Instance = Terrain`, Grass). |
+| `shim.editableData(inst)` | `AssetService:CreateEditableMesh(options)` / `CreateEditableImage({ Size })` return in-memory `EditableMesh` / `EditableImage` instances. The mesh hands out sequential ids per kind (vertex, normal, UV, face: 1, 2, 3, ...), validates references and answers `GetVertices/GetFaces/GetPosition/GetNormal/GetUV/GetFaceVertices/GetFaceNormals/GetFaceUVs/GetSize`; `shim.editableData(mesh)` exposes `{ vertices, normals, uvs, faces, faceNormals, faceUVs }`. The image records each `WritePixelsBuffer(position, size, buffer)` (length must be `w * h * 4`, region inside `Size`) in `shim.editableData(image).writes` as `{ position, size, length, buffer }`. `Content.fromObject(obj)` gives `{ Object = obj }`; `CreateMeshPartAsync(Content.fromObject(editableMesh))` returns a `MeshPart` with `MeshContent` = that Content, `MeshId ""` and `Size` = the mesh's bounds; `MeshPart.TextureContent` is a plain property. Both calls are recorded in `shim.assetService.calls`. |
 | `shim.assetService.calls`, `.failNextCalls = n`, `.latency = s` | `AssetService:CreateMeshPartAsync(content, options)` returns a `MeshPart` (`MeshId` from the `Content`, `Size (1,1,1)`, requested fidelities) and records each call (`{method, content, options, meshId}`); the next `n` calls raise `CreateMeshPartAsync failed (simulated)`; with `latency` set each call yields (`task.wait`) that long first, so concurrent loads can be exercised. The `Content` global (`fromAssetId`, `fromUri`, `fromObject`, `none`) is typed `Content`. |
 | `shim.input.press/release/tap(keyCode, inputType?)`, `shim.triggerAction(name, state?)` | Fire `UserInputService` events and `ContextActionService` bindings. |
 | `shim.marketplace.ownedPasses[userId][passId] = true`, `shim.marketplace.simulatePurchase(player, productId)` | Monetisation stubs; `simulatePurchase` invokes `MarketplaceService.ProcessReceipt`. |
 | `shim.prints`, `shim.warnings`, `shim.threadErrors`, `shim.remoteLog`, `shim.boundToClose`, `shim.unknownClasses` | Recorded output and bookkeeping. `shim.quiet = true` silences stdout. |
+| `shim.realClock()` | The host's `os.clock` (wall time). `os.clock()` inside specs and modules is the virtual clock, so use this for benchmarks (`codecs.spec.luau` prints the embedded-texture decode times with it). |
 | `shim.tweensInstant = true` | `Tween:Play()` applies final values immediately (Completed fires on the next step). |
 | `shim.Signal.new()` | The Signal implementation used for every instance event. Instance events also expose `:Fire(...)` so tests can simulate engine events (`button.Activated:Fire()`, `prompt.Triggered:Fire(player)`). |
 | `shim.remoteCopy` (default true) | Remote/Bindable arguments are deep-copied like real replication. |
+
+## Codec test vectors (`tests/fixtures/CodecVectors.luau`)
+
+`tests/specs/codecs.spec.luau` checks the pure-Luau decoders byte-exactly against vectors that
+`tools/make_codec_fixtures.py` computes with Python's `zlib`, `base64`, `struct` and PIL
+(`python3 -I tools/make_codec_fixtures.py`; the fixture is a `--!nocheck` ModuleScript under
+`ReplicatedStorage.TestFixtures`, every binary field a base64 string):
+
+- `base64`: the RFC 4648 vectors, the 256-byte table, random bytes, whitespace / unpadded /
+  invalid inputs.
+- `zlib`: empty, one byte, a stored block (level 0), fixed Huffman (`Z_FIXED`), dynamic Huffman
+  text, random bytes, repeated patterns (overlapping copies of every short distance, runs, the
+  258-byte maximum match), a skewed distribution (literal codes longer than the 10-bit fast
+  table), 200 KB mixed at levels 9 and 1, and a multi-block stream with full flushes. Each carries
+  `length`, the Adler-32 of the expected output and, for the small ones, the exact bytes.
+  `zlibErrors` holds a bad header, a wrong FCHECK, an Adler-32 mismatch, a truncated stream, a
+  stream with trailing bytes (for `inflateRaw`'s consumed-bytes count) and an FDICT header. A 600 KB
+  stored-block stream built in the spec itself checks the progress calls between Adler-32 slices.
+- `png`: PIL-encoded 1x1 RGB, 7x5 RGB gradient, 16x16 RGBA, 9x9 grey, 5x4 grey+alpha and
+  33x17 RGB noise, plus four hand-built PNGs (RGB, RGBA, grey, grey+alpha) whose rows use the
+  filters None/Sub/Up/Average/Paeth in turn and whose IDAT is split over three chunks; the
+  expected RGBA bytes come from PIL (`convert("RGBA")`), so the decoder is checked against PIL.
+  `pngErrors`: palette, interlaced, 16-bit, bad signature, short data, Adler-32 mismatch.
+- `ddcm`: a unit cube OBJ packed with `tools/mesh_embed.pack_geometry` (the production packer),
+  parsed back with `struct` (positions, raw i8 normals, raw u16 UVs, 1-based triangles), plus
+  bad-magic / bad-version / truncated variants.
+- `embedded`: for every `src/shared/MeshData/<Vehicle>/` module, the byte counts and Adler-32 of
+  the geometry blob, of the texture PNG, of its inflated IDAT stream (the value the zlib trailer
+  carries) and of the RGBA pixels as PIL decodes them. The end-to-end specs decode the real
+  embedded data through `MeshData.loadTexture` → `PngDecoder.decode` and `MeshData.loadGeometry`
+  → `MeshPack.decode`, compare against these, check the progress calls of every stage (per base64
+  chunk, per inflate block, between Adler-32 slices, per unfilter / RGBA row step) and print the decode times (`[codecs] ...` lines;
+  the harness runs modules through `setfenv`, which disables Luau's builtin fastcalls, so these
+  numbers are roughly 3-4x slower than the same code under a plain `luau` run or in Roblox).
 
 ## What is mocked faithfully vs. approximated
 

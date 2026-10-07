@@ -68,18 +68,26 @@ Throttle/steer: `VehicleSeat.ThrottleFloat/SteerFloat` (W/S/A/D, arrows, touch t
 `Vehicles` vs `Vehicles`: off. `Vehicles` vs `Players`: off. `Vehicles` vs `NPCs`: off. `Packages` vs all: off. Characters are put in `Players` on spawn by VehicleService.
 
 ## Custom meshes
-The three vehicles can swap their generated block bodies for the imported Meshy meshes in `assets/meshes/<VehicleId>/`
-(already converted to the game's conventions: studs, +X right, +Y up, -Z forward, origin at the chassis centre
-`handling.rideHeight` above the ground). Import each `<VehicleId>_Body.obj` with Studio's 3D Importer and paste the
-resulting `MeshId` / `TextureID` numbers into `Shared/Config/MeshAssets.luau`; a `meshId` of 0 keeps the generated
-parts. With ids set, `VehicleBuilder` builds the body as one `MeshBody` MeshPart welded to `BodyRoot` (no `PaintSlot`,
-so paint cosmetics do not apply; the texture carries the look), the `Wheels` folder stays empty until wheel meshes are
-configured (they are baked into the body for now, so wheel spin/steer cosmetics are a no-op) and the seat, cargo slots,
-chassis box and dismount point come from `VehicleDefinitions[id].mesh` through `VehicleDefinitions.getEffective`.
-Nothing in the driving model changes: the chassis is still the invisible physics box and the controller never looks at
-the body parts. A mesh that fails to load warns once and that vehicle falls back to the generated parts for the session.
-The shop preview clones the server-published display from `ReplicatedStorage.SharedAssets.VehicleDisplays`.
-Details: `docs/ARCHITECTURE.md` section 12, "Custom meshes".
+The three vehicles use the imported Meshy meshes in `assets/meshes/<VehicleId>/` (already converted to the game's
+conventions: studs, +X right, +Y up, -Z forward, origin at the chassis centre `handling.rideHeight` above the ground).
+**Embedded mode is the active mode and needs no upload:** `tools/mesh_embed.py` packs each mesh (geometry + 1024 px
+texture) into base64 data modules under `src/shared/MeshData/<VehicleId>/`, `MeshAssets.Vehicles[id].embedded = true`
+switches the vehicle to it, and `MeshAssets.isEmbedded(id)` is true while the data module exists. The server then builds
+the body as an invisible placeholder `Part` named `MeshBody` (tag `EmbeddedMeshBody`, attribute `VehicleId`, welded to
+`BodyRoot`) and every client rebuilds the mesh once after joining (`EmbeddedMeshController`: PNG + geometry decode in a
+background task, `EditableImage` + `EditableMesh`, one cosmetic `MeshPart` per vehicle) and attaches a clone to every
+placeholder it sees. The uploaded-id path (`MeshAssets.hasBody`, Studio 3D Importer ids, `AssetService:CreateMeshPartAsync`
+on the server) still exists: set `embedded = false` and paste the ids. In both modes the body has no `PaintSlot` (paint
+cosmetics do not apply; the texture carries the look), the `Wheels` folder stays empty until wheel meshes are configured
+(they are baked into the body, so wheel spin/steer cosmetics are a no-op) and the seat, cargo slots, chassis box and
+dismount point come from `VehicleDefinitions[id].mesh` through `VehicleDefinitions.getEffective` (`useMesh` =
+`VehicleBuilder.usesMesh(id)` on the server, `MeshAssets.usesCustomMesh(id)` on the client). Nothing in the driving model
+changes: the chassis is still the invisible physics box and the controller never looks at the body parts. If a client
+cannot decode a mesh it warns once and shows that vehicle's placeholder as a semi-transparent grey box; a server-side
+uploaded mesh that fails to load falls back to the generated parts for the session. The shop preview clones the
+server-published display from `ReplicatedStorage.SharedAssets.VehicleDisplays` (which carries the placeholder in embedded
+mode, dressed by the controller once the mesh is ready).
+Details: `docs/ARCHITECTURE.md` section 12, "Custom meshes" and "Embedded meshes"; `docs/MESHES.md`.
 
 ## Cosmetic sync for other clients
 Non-owner clients spin the wheels of nearby vehicles (≤ 200 studs) from `chassis.AssemblyLinearVelocity` projected on the chassis look vector and steer them from the lateral velocity sign; no remotes are used.

@@ -1623,6 +1623,10 @@ describe("ClientBootstrap", function()
 				}
 			end,
 		})
+		-- Keep the embedded mesh decode (EmbeddedMeshController.Start) out of this test: the real
+		-- data modules would decode three 1024 px textures here. tests/specs/embedded_meshes.spec.luau covers it.
+		local EmbeddedMeshController = require(clientInstance("Controllers").EmbeddedMeshController)
+		EmbeddedMeshController._setDecoders({ list = function() return {} end })
 		local thread = shim.runScript(clientInstance("ClientBootstrap"))
 		shim.advance(3)
 		local ClientState = requireClient("ClientState")

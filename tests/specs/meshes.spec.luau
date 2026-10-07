@@ -20,6 +20,17 @@ local function requireBuilder(name)
 	return shim.requirePath("ServerScriptService/DeliveryDash/Builders/" .. name)
 end
 
+-- These specs cover the uploaded-id path (AssetService:CreateMeshPartAsync); the embedded mode
+-- (the default, tests/specs/embedded_meshes.spec.luau) is switched off for every vehicle. The
+-- DataModel is reset per test, so nothing needs restoring.
+local function requireMeshAssets()
+	local MeshAssets = requireShared("Config/MeshAssets")
+	for _, entry in pairs(MeshAssets.Vehicles) do
+		entry.embedded = false
+	end
+	return MeshAssets
+end
+
 local function partNames(folder)
 	local names = {}
 	for _, child in ipairs(folder:GetChildren()) do
@@ -70,7 +81,7 @@ describe("MeshAssets + VehicleDefinitions.getEffective", function()
 	beforeEach(function()
 		shim.reset()
 		shim.setContext("server")
-		MeshAssets = requireShared("Config/MeshAssets")
+		MeshAssets = requireMeshAssets()
 		VehicleDefinitions = requireShared("Definitions/VehicleDefinitions")
 	end)
 
@@ -163,7 +174,7 @@ describe("VehicleBuilder mesh path", function()
 	beforeEach(function()
 		shim.reset()
 		shim.setContext("server")
-		MeshAssets = requireShared("Config/MeshAssets")
+		MeshAssets = requireMeshAssets()
 		VehicleDefinitions = requireShared("Definitions/VehicleDefinitions")
 		VehicleBuilder = requireBuilder("VehicleBuilder")
 	end)
@@ -496,7 +507,7 @@ describe("VehicleService with mesh vehicles", function()
 	it("publishes SharedAssets.VehicleDisplays only for vehicles with ids set", function()
 		shim.reset()
 		shim.setContext("server")
-		MeshAssets = requireShared("Config/MeshAssets")
+		MeshAssets = requireMeshAssets()
 		setIds(MeshAssets, { Van = { 5001, 5002 }, Bicycle = { 6001, 6002 } })
 		local VehicleService = serverEnv()
 		local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -525,7 +536,7 @@ describe("VehicleService with mesh vehicles", function()
 	it("publishes nothing with ids 0", function()
 		shim.reset()
 		shim.setContext("server")
-		MeshAssets = requireShared("Config/MeshAssets")
+		MeshAssets = requireMeshAssets()
 		serverEnv()
 		local ReplicatedStorage = game:GetService("ReplicatedStorage")
 		expect(ReplicatedStorage.SharedAssets:FindFirstChild("VehicleDisplays")).toBeNil()
@@ -535,7 +546,7 @@ describe("VehicleService with mesh vehicles", function()
 	it("skips the display when the mesh fails to load (generated preview on the client)", function()
 		shim.reset()
 		shim.setContext("server")
-		MeshAssets = requireShared("Config/MeshAssets")
+		MeshAssets = requireMeshAssets()
 		setIds(MeshAssets, { Van = { 5001, 5002 } })
 		shim.assetService.failNextCalls = 1
 		serverEnv()
@@ -547,7 +558,7 @@ describe("VehicleService with mesh vehicles", function()
 	it("Spawn, Mount and Dismount work with a mesh Van and dismount at the mesh offset", function()
 		shim.reset()
 		shim.setContext("server")
-		MeshAssets = requireShared("Config/MeshAssets")
+		MeshAssets = requireMeshAssets()
 		setIds(MeshAssets, { Van = { 5001, 5002 } })
 		local VehicleService = serverEnv()
 		local player = shim.addPlayer("Rider", 401)
@@ -593,7 +604,7 @@ describe("VehicleService with mesh vehicles", function()
 	it("PackageBuilder.attachToVehicle uses the mesh cargo slots", function()
 		shim.reset()
 		shim.setContext("server")
-		MeshAssets = requireShared("Config/MeshAssets")
+		MeshAssets = requireMeshAssets()
 		setIds(MeshAssets, { Bicycle = { 6001, 6002 } })
 		local VehicleBuilder = requireBuilder("VehicleBuilder")
 		local PackageBuilder = requireBuilder("PackageBuilder")
@@ -626,7 +637,7 @@ describe("CosmeticsController mesh previews", function()
 	local function clientSetup()
 		shim.reset()
 		shim.setContext("client")
-		MeshAssets = requireShared("Config/MeshAssets")
+		MeshAssets = requireMeshAssets()
 		-- StarterPlayer holds two StarterPlayerScripts in the harness (see client.spec.luau): scan for the root.
 		local root
 		for _, child in ipairs(game:GetService("StarterPlayer"):GetChildren()) do

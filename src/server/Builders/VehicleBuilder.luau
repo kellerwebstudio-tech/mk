@@ -9,6 +9,9 @@
 --     Seat (VehicleSeat, Disabled, welded to BodyRoot)
 --     Body (Folder of cosmetic parts welded to BodyRoot; attribute PaintSlot where recolourable)
 --       -- or, when MeshAssets.hasBody(id): a single MeshPart "MeshBody" (no PaintSlot)
+--       -- or, when MeshAssets.isEmbedded(id): an invisible Part "MeshBody" placeholder (tag
+--          "EmbeddedMeshBody", attribute VehicleId) that every client dresses with the mesh it
+--          rebuilds from the embedded data (EmbeddedMeshController)
 --     Wheels (Folder of cylinders joined to BodyRoot through Motor6D "WheelMotor";
 --       empty for a mesh vehicle until wheel meshes are configured in MeshAssets)
 --     Cargo (Folder; packages are parented here by PackageBuilder)
@@ -19,6 +22,11 @@
 -- the vehicle falls back to the generated parts; VehicleBuilder.usesMesh(id) reports which path is
 -- in effect so VehicleService / PackageBuilder read the matching seat, cargo and dismount offsets
 -- through VehicleDefinitions.getEffective.
+--
+-- Embedded meshes (the active mode): when MeshAssets.isEmbedded(id) nothing is loaded on the server
+-- at all; the body is the placeholder described above, usesMesh(id) is true (mesh seat/cargo/chassis
+-- values apply) and warmMeshCache is a no-op. The uploaded-id path stays available with
+-- embedded = false.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local CollectionService = game:GetService("CollectionService")
@@ -41,6 +49,7 @@ VehicleBuilder.COLLISION_GROUP = "Vehicles"
 VehicleBuilder.TAG = "DeliveryVehicle"
 VehicleBuilder.SMALL_PART_SIZE = 1 -- parts whose largest dimension is below this cast no shadow
 VehicleBuilder.MESH_BODY_NAME = "MeshBody"
+VehicleBuilder.EMBEDDED_TAG = MeshAssets.EMBEDDED_TAG or "EmbeddedMeshBody"
 
 -- Mesh templates by "<meshId>:<textureId>"; a failed id is remembered so it warns once and is not
 -- retried this server session (CreateMeshPartAsync yields and would otherwise stall every spawn).
@@ -177,13 +186,25 @@ local function cloneMeshPart(template: MeshPart, name: string, size: Vector3, cf
 	return part
 end
 
--- True while the vehicle is configured for a mesh body (MeshAssets ids set, definition has a
--- `mesh` block) and the mesh has not failed to load. This is the `useMesh` flag every reader of
--- seat/cargo/chassis/dismount offsets passes to VehicleDefinitions.getEffective.
+-- True when the vehicle takes the embedded-data path (MeshAssets.isEmbedded and a `mesh` block).
+function VehicleBuilder.isEmbedded(vehicleId: string): boolean
+	local def = VehicleDefinitions.get(vehicleId)
+	if not def or def.mesh == nil then
+		return false
+	end
+	return MeshAssets.isEmbedded(vehicleId)
+end
+
+-- True while the vehicle is configured for a mesh body (embedded data, or MeshAssets ids set and
+-- the mesh has not failed to load) and the definition has a `mesh` block. This is the `useMesh`
+-- flag every reader of seat/cargo/chassis/dismount offsets passes to VehicleDefinitions.getEffective.
 function VehicleBuilder.usesMesh(vehicleId: string): boolean
 	local def = VehicleDefinitions.get(vehicleId)
 	if not def or def.mesh == nil then
 		return false
+	end
+	if MeshAssets.isEmbedded(vehicleId) then
+		return true
 	end
 	local meshId, textureId = MeshAssets.bodyIds(vehicleId)
 	if not meshId then
@@ -197,6 +218,10 @@ end
 function VehicleBuilder.warmMeshCache(vehicleId: string): boolean
 	if not VehicleBuilder.usesMesh(vehicleId) then
 		return false
+	end
+	if VehicleBuilder.isEmbedded(vehicleId) then
+		-- Nothing to load on the server: clients rebuild the mesh from the embedded data.
+		return true
 	end
 	local def = getDefinition(vehicleId)
 	local body = getBodyTemplate(vehicleId)
@@ -318,6 +343,45 @@ local function makeMeshBody(vehicleId: string, def: VehicleDefinitions.VehicleDe
 		return nil
 	end
 	return cloneMeshPart(template, VehicleBuilder.MESH_BODY_NAME, vec(mesh.body.size), chassisCFrame * CFrame.new(vec(mesh.body.offset)))
+end
+
+-- Invisible placeholder for an embedded mesh body: clients find it by tag, rebuild the mesh from
+-- ReplicatedStorage.Shared.MeshData and attach it (EmbeddedMeshController). Not welded/anchored here.
+local function makePlaceholderBody(vehicleId: string, def: VehicleDefinitions.VehicleDefinition, chassisCFrame: CFrame): Part?
+	local mesh = def.mesh
+	if not mesh then
+		return nil
+	end
+	local part = Instance.new("Part")
+	part.Name = VehicleBuilder.MESH_BODY_NAME
+	part.Shape = Enum.PartType.Block
+	part.Size = vec(mesh.body.size)
+	part.CFrame = chassisCFrame * CFrame.new(vec(mesh.body.offset))
+	part.Transparency = 1
+	part.Color = Color3.fromRGB(163, 162, 165)
+	part.Material = Enum.Material.SmoothPlastic
+	part.CanCollide = false
+	part.CanQuery = false
+	part.CanTouch = false
+	part.CastShadow = false
+	part.Massless = true
+	part.TopSurface = Enum.SurfaceType.Smooth
+	part.BottomSurface = Enum.SurfaceType.Smooth
+	part:SetAttribute("VehicleId", vehicleId)
+	CollectionService:AddTag(part, VehicleBuilder.EMBEDDED_TAG)
+	return part
+end
+
+-- The custom body for the vehicle: the embedded placeholder, the uploaded-mesh clone, or nil
+-- (generated parts). Yields on the first uploaded-mesh use.
+local function makeCustomBody(vehicleId: string, def: VehicleDefinitions.VehicleDefinition, chassisCFrame: CFrame): BasePart?
+	if not VehicleBuilder.usesMesh(vehicleId) then
+		return nil
+	end
+	if VehicleBuilder.isEmbedded(vehicleId) then
+		return makePlaceholderBody(vehicleId, def, chassisCFrame)
+	end
+	return makeMeshBody(vehicleId, def, chassisCFrame)
 end
 
 -- Mesh wheel parts for the configured wheels (an unconfigured or failed wheel is skipped).
@@ -482,7 +546,7 @@ function VehicleBuilder.build(vehicleId: string, ownerUserId: number, colors: Co
 	-- Resolve the mesh body first: a failed load must fall back to the generated geometry AND the
 	-- generated offsets, so the effective layout is chosen after the attempt.
 	local chassisCFrame = CFrame.new(0, def.handling.rideHeight, 0)
-	local meshBody: MeshPart? = if VehicleBuilder.usesMesh(vehicleId) then makeMeshBody(vehicleId, def, chassisCFrame) else nil
+	local meshBody: BasePart? = makeCustomBody(vehicleId, def, chassisCFrame)
 	local useMesh = meshBody ~= nil
 	local eff = effectiveFor(vehicleId, useMesh)
 
@@ -612,7 +676,7 @@ function VehicleBuilder.buildDisplay(vehicleId: string, colors: Colors?): Model
 	local palette = resolveColors(def, colors)
 
 	local chassisCFrame = CFrame.new(0, def.handling.rideHeight, 0)
-	local meshBody: MeshPart? = if VehicleBuilder.usesMesh(vehicleId) then makeMeshBody(vehicleId, def, chassisCFrame) else nil
+	local meshBody: BasePart? = makeCustomBody(vehicleId, def, chassisCFrame)
 	local useMesh = meshBody ~= nil
 	local eff = effectiveFor(vehicleId, useMesh)
 

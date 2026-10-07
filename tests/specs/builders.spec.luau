@@ -413,6 +413,12 @@ describe("VehicleBuilder", function()
 	beforeEach(function()
 		shim.reset()
 		shim.setContext("server")
+		-- Generated-part path: switch the embedded mesh mode (the default; see
+		-- tests/specs/embedded_meshes.spec.luau) off for every vehicle.
+		local MeshAssets = requireShared("Config/MeshAssets")
+		for _, entry in pairs(MeshAssets.Vehicles) do
+			entry.embedded = false
+		end
 		VehicleBuilder = requireBuilder("VehicleBuilder")
 		VehicleDefinitions = requireShared("Definitions/VehicleDefinitions")
 	end)

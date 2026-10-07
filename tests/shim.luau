@@ -206,6 +206,7 @@ shim.Signal = Signal
 ---- SECTION 3: virtual scheduler and clock ------------------------------------------------
 
 shim.clock = 1000 -- os.clock()
+shim.realClock = os.clock -- the host clock (wall time), for specs that report real decode/benchmark times
 shim.epochStart = 1700000000 -- os.time() at clock start
 shim.clockStart = 1000
 shim.frame = 0
@@ -2382,6 +2383,19 @@ function Inst.removeTag(inst, tag)
 	end
 end
 
+-- A clone keeps the source's tags (copied in cloneRec) and, like the engine, is reported by
+-- CollectionService:GetTagged once it is in the DataModel: register it in the tag sets.
+table.insert(Inst.cloneHooks, function(src, copy)
+	local cs = priv[copy]
+	for tag in pairs(cs.tags) do
+		local set = tagSet(tag)
+		if not set.index[copy] then
+			set.index[copy] = true
+			table.insert(set.list, copy)
+		end
+	end
+end)
+
 table.insert(Inst.ancestryHooks, function(inst, nowInDM)
 	local s = priv[inst]
 	for tag in pairs(s.tags) do
@@ -2718,7 +2732,7 @@ defclass("BasePart", "PVInstance", {
 
 defclass("Part", "BasePart", { defaults = { Shape = function() return Enum.PartType.Block end } })
 defclass("FormFactorPart", "BasePart")
-defclass("MeshPart", "BasePart", { defaults = { MeshId = "", TextureID = "", CollisionFidelity = function() return Enum.CollisionFidelity.Default end, RenderFidelity = function() return Enum.RenderFidelity.Automatic end }, methods = { ApplyMesh = function() end } })
+defclass("MeshPart", "BasePart", { defaults = { MeshId = "", TextureID = "", MeshContent = NIL, TextureContent = NIL, CollisionFidelity = function() return Enum.CollisionFidelity.Default end, RenderFidelity = function() return Enum.RenderFidelity.Automatic end }, methods = { ApplyMesh = function() end } })
 defclass("WedgePart", "BasePart")
 defclass("CornerWedgePart", "BasePart")
 defclass("TrussPart", "BasePart", { defaults = { Size = function() return Vector3.new(2, 2, 2) end } })
@@ -5214,8 +5228,118 @@ local function contentAssetId(content)
 	end
 	return nil
 end
+-- EditableMesh / EditableImage: in-memory recorders. An EditableMesh hands out sequential ids per
+-- kind (vertex, normal, UV, face: 1, 2, 3, ...) and keeps what was added; read it back through the
+-- real API (GetVertices/GetPosition/GetNormal/GetUV/GetFaces/GetFaceVertices/GetFaceNormals/
+-- GetFaceUVs) or shim.editableData(inst) = { vertices, normals, uvs, faces, faceNormals, faceUVs }.
+-- An EditableImage records every WritePixelsBuffer call in shim.editableData(image).writes as
+-- { position, size, length } (length = buffer.len). AssetService:CreateEditableMesh(options) /
+-- CreateEditableImage({ Size }) create them; CreateMeshPartAsync(Content.fromObject(editableMesh))
+-- returns a MeshPart with MeshContent = that Content (MeshId ""). Both are plain Instances.
+local function editableData(inst)
+	local s = priv[inst]
+	if not s then fail(3, "shim.editableData expects an EditableMesh or EditableImage instance") end
+	if not s.editable then
+		s.editable = { vertices = {}, normals = {}, uvs = {}, faces = {}, faceNormals = {}, faceUVs = {}, writes = {} }
+	end
+	return s.editable
+end
+shim.editableData = editableData
+local function checkId(self, list, id, what)
+	if type(id) ~= "number" or list[id] == nil then fail(3, "EditableMesh: invalid %s id %s", what, tostring(id)) end
+end
+defclass("EditableMesh", "Instance", { defaults = { FixedSize = false, SkinningEnabled = false }, methods = {
+	AddVertex = function(self, p)
+		if shim.typeof(p) ~= "Vector3" then fail(2, "EditableMesh:AddVertex expects a Vector3, got %s", shim.typeof(p)) end
+		local d = editableData(self)
+		local id = #d.vertices + 1
+		d.vertices[id] = p
+		return id
+	end,
+	AddNormal = function(self, n)
+		if n ~= nil and shim.typeof(n) ~= "Vector3" then fail(2, "EditableMesh:AddNormal expects a Vector3, got %s", shim.typeof(n)) end
+		local d = editableData(self)
+		local id = #d.normals + 1
+		d.normals[id] = n or Vector3.new(0, 1, 0)
+		return id
+	end,
+	AddUV = function(self, uv)
+		if shim.typeof(uv) ~= "Vector2" then fail(2, "EditableMesh:AddUV expects a Vector2, got %s", shim.typeof(uv)) end
+		local d = editableData(self)
+		local id = #d.uvs + 1
+		d.uvs[id] = uv
+		return id
+	end,
+	AddTriangle = function(self, a, b, c)
+		local d = editableData(self)
+		checkId(self, d.vertices, a, "vertex") checkId(self, d.vertices, b, "vertex") checkId(self, d.vertices, c, "vertex")
+		local id = #d.faces + 1
+		d.faces[id] = { a, b, c }
+		return id
+	end,
+	SetFaceNormals = function(self, faceId, ids)
+		local d = editableData(self)
+		checkId(self, d.faces, faceId, "face")
+		if type(ids) ~= "table" or #ids ~= 3 then fail(2, "EditableMesh:SetFaceNormals expects a table of 3 normal ids") end
+		for _, id in ipairs(ids) do checkId(self, d.normals, id, "normal") end
+		d.faceNormals[faceId] = { ids[1], ids[2], ids[3] }
+	end,
+	SetFaceUVs = function(self, faceId, ids)
+		local d = editableData(self)
+		checkId(self, d.faces, faceId, "face")
+		if type(ids) ~= "table" or #ids ~= 3 then fail(2, "EditableMesh:SetFaceUVs expects a table of 3 UV ids") end
+		for _, id in ipairs(ids) do checkId(self, d.uvs, id, "uv") end
+		d.faceUVs[faceId] = { ids[1], ids[2], ids[3] }
+	end,
+	GetVertices = function(self) local out = {} for id in ipairs(editableData(self).vertices) do out[#out + 1] = id end return out end,
+	GetFaces = function(self) local out = {} for id in ipairs(editableData(self).faces) do out[#out + 1] = id end return out end,
+	GetPosition = function(self, id) local d = editableData(self) checkId(self, d.vertices, id, "vertex") return d.vertices[id] end,
+	GetNormal = function(self, id) local d = editableData(self) checkId(self, d.normals, id, "normal") return d.normals[id] end,
+	GetUV = function(self, id) local d = editableData(self) checkId(self, d.uvs, id, "uv") return d.uvs[id] end,
+	GetFaceVertices = function(self, id) local d = editableData(self) checkId(self, d.faces, id, "face") return { table.unpack(d.faces[id]) } end,
+	GetFaceNormals = function(self, id) local d = editableData(self) checkId(self, d.faces, id, "face") local n = d.faceNormals[id] return n and { table.unpack(n) } or {} end,
+	GetFaceUVs = function(self, id) local d = editableData(self) checkId(self, d.faces, id, "face") local u = d.faceUVs[id] return u and { table.unpack(u) } or {} end,
+	GetSize = function(self) local d = editableData(self) local lo, hi = nil, nil for _, p in ipairs(d.vertices) do lo = lo and lo:Min(p) or p hi = hi and hi:Max(p) or p end return lo and (hi - lo) or Vector3.zero end,
+	RemoveUnused = function() return 0 end,
+	Destroy = function(self) priv[self].destroyed = true end,
+} })
+defclass("EditableImage", "Instance", { defaults = { Size = function() return Vector2.new(1, 1) end }, methods = {
+	WritePixelsBuffer = function(self, position, size, buf)
+		if shim.typeof(position) ~= "Vector2" or shim.typeof(size) ~= "Vector2" then fail(2, "EditableImage:WritePixelsBuffer expects (Vector2, Vector2, buffer)") end
+		if nativeTypeof(buf) ~= "buffer" then fail(2, "EditableImage:WritePixelsBuffer expects a buffer, got %s", nativeTypeof(buf)) end
+		local length = buffer.len(buf)
+		if length ~= size.X * size.Y * 4 then fail(2, "EditableImage:WritePixelsBuffer: buffer length %d does not match %dx%d RGBA (%d bytes)", length, size.X, size.Y, size.X * size.Y * 4) end
+		local own = rawProp(self, "Size")
+		if position.X < 0 or position.Y < 0 or position.X + size.X > own.X or position.Y + size.Y > own.Y then fail(2, "EditableImage:WritePixelsBuffer: region outside the image") end
+		table.insert(editableData(self).writes, { position = position, size = size, length = length, buffer = buf })
+	end,
+	ReadPixelsBuffer = function(self, position, size)
+		local writes = editableData(self).writes
+		local last = writes[#writes]
+		if last and last.position == position and last.size == size then return last.buffer end
+		return buffer.create(size.X * size.Y * 4)
+	end,
+	DrawRectangle = function() end, DrawCircle = function() end, DrawLine = function() end, DrawImage = function() end,
+	Destroy = function(self) priv[self].destroyed = true end,
+} })
 defclass("AssetService", "Instance", { methods = {
 	CreateEditableMeshAsync = function() return nil end,
+	CreateEditableMesh = function(self, options)
+		local mesh = new("EditableMesh")
+		if type(options) == "table" and options.FixedSize ~= nil then setProp(mesh, "FixedSize", options.FixedSize == true) end
+		table.insert(shim.assetService.calls, { method = "CreateEditableMesh", options = options, result = mesh })
+		return mesh
+	end,
+	CreateEditableImage = function(self, options)
+		local image = new("EditableImage")
+		if type(options) == "table" and options.Size ~= nil then
+			if shim.typeof(options.Size) ~= "Vector2" then fail(2, "AssetService:CreateEditableImage: Size must be a Vector2") end
+			if options.Size.X < 1 or options.Size.Y < 1 or options.Size.X > 1024 or options.Size.Y > 1024 then fail(2, "AssetService:CreateEditableImage: Size must be within 1x1 .. 1024x1024") end
+			setProp(image, "Size", options.Size)
+		end
+		table.insert(shim.assetService.calls, { method = "CreateEditableImage", options = options, result = image })
+		return image
+	end,
 	CreateMeshPartAsync = function(self, content, options)
 		local a = shim.assetService
 		local assetId = contentAssetId(content)
@@ -5230,7 +5354,14 @@ defclass("AssetService", "Instance", { methods = {
 		end
 		local part = new("MeshPart")
 		setProp(part, "Size", Vector3.new(1, 1, 1))
-		if assetId then setProp(part, "MeshId", "rbxassetid://" .. tostring(assetId)) elseif type(content.Uri) == "string" then setProp(part, "MeshId", content.Uri) end
+		setProp(part, "MeshContent", content)
+		if assetId then setProp(part, "MeshId", "rbxassetid://" .. tostring(assetId)) elseif type(content.Uri) == "string" then setProp(part, "MeshId", content.Uri)
+		elseif rawget(content, "Object") ~= nil then
+			local object = rawget(content, "Object")
+			if not isInstance(object) or priv[object].className ~= "EditableMesh" then fail(2, "AssetService:CreateMeshPartAsync: Content.fromObject must wrap an EditableMesh") end
+			local size = object:GetSize()
+			if size.Magnitude > 0 then setProp(part, "Size", size) end
+		end
 		if type(options) == "table" then
 			if options.CollisionFidelity ~= nil then setProp(part, "CollisionFidelity", options.CollisionFidelity) end
 			if options.RenderFidelity ~= nil then setProp(part, "RenderFidelity", options.RenderFidelity) end

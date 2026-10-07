@@ -330,7 +330,7 @@ local function resolveVehicle()
 			vehicleId = vehicleId,
 			def = def,
 			handling = HandlingOverrides.get(vehicleId),
-			chassisLength = VehicleDefinitions.getEffective(vehicleId, MeshAssets.hasBody(vehicleId)).chassisSize[3],
+			chassisLength = VehicleDefinitions.getEffective(vehicleId, MeshAssets.usesCustomMesh(vehicleId)).chassisSize[3],
 		}
 	end)
 	resolving = false

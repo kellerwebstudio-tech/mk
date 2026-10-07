@@ -1,4 +1,34 @@
-# Custom vehicle meshes: import guide
+# Custom vehicle meshes
+
+## Embedded mode (no upload) — the active mode
+
+The meshes ship **inside the place**: `tools/mesh_embed.py` packs each `assets/meshes/<VehicleId>/<VehicleId>_Body.obj`
+and `<VehicleId>_Texture.png` into Luau data modules under `src/shared/MeshData/<VehicleId>/` (`init.luau` index plus
+`G<n>` geometry and `T<n>` texture chunks, each returning one base64 string of at most 150,000 characters). At runtime:
+
+- **Server** (`VehicleBuilder`): with `MeshAssets.Vehicles[id].embedded = true` (the default for Bicycle, Scooter and
+  Van) and a data module present (`MeshAssets.isEmbedded(id)`), the vehicle body is an invisible placeholder `Part`
+  `MeshBody` of the mesh's size and offset (tag `EmbeddedMeshBody`, attribute `VehicleId`). Nothing is loaded from
+  Roblox; `VehicleService` publishes the same placeholder in the shop display copies.
+- **Client** (`EmbeddedMeshController`): after joining, one background task per vehicle decodes the texture
+  (`Base64` → `Inflate` → `PngDecoder`) and the geometry (`MeshPack`, "DDCM" v1), creates an `EditableImage` and an
+  `EditableMesh`, turns them into one `MeshPart` with `AssetService:CreateMeshPartAsync(Content.fromObject(...))` and
+  attaches a clone to every placeholder (welded on a live vehicle, anchored on a display). The vehicles are decoded one
+  after another and every stage yields regularly, so the frame rate stays smooth; expect roughly 1–3 s per vehicle after join and about 12 MB of texture memory per client
+  (three 1024 × 1024 RGBA images). A decode failure warns once and leaves that vehicle as a semi-transparent grey box.
+
+Regenerate the data after changing a mesh or texture (requires Python 3 with numpy and Pillow):
+
+```
+python3 tools/mesh_embed.py          # 1024 px textures (default)
+python3 tools/mesh_embed.py 512      # smaller textures: faster decode, a quarter of the memory
+```
+
+The script rewrites `src/shared/MeshData/<VehicleId>/*.luau` and `src/shared/MeshData/report.json`; then sync with Rojo
+as usual. Uploading the meshes is optional: to use uploaded ids instead (one `MeshPart` created by the server, no client
+decode), import them as described below and set `embedded = false` for that vehicle in `Shared/Config/MeshAssets.luau`.
+
+## Import guide (optional: uploaded ids)
 
 The three Meshy vehicles are converted and ready under `assets/meshes/`:
 

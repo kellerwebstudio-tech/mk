@@ -28,6 +28,7 @@ local CONTROLLER_ORDER = {
 	"EffectsController",
 	"CityLifeController",
 	"CosmeticsController",
+	"EmbeddedMeshController",
 	"TutorialController",
 }
 
