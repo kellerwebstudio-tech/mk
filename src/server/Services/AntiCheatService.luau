@@ -25,6 +25,8 @@ local AntiCheatService = {}
 
 local ctx: any = nil
 local samples: { [Player]: Sample } = {}
+-- Studio tuning: per-player, per-vehicle speed caps above the definition (DevService.SetSpeedCap).
+local speedOverrides: { [Player]: { [string]: number } } = {}
 local running = false
 
 local function getSample(player: Player): Sample
@@ -70,7 +72,8 @@ local function maxSpeedFor(player: Player): number
 			if progression and profile then
 				multiplier = progression.GetSpeedMultiplier(profile, vehicleId)
 			end
-			return def.handling.maxSpeed * multiplier
+			local override = AntiCheatService.GetSpeedOverride(player, vehicleId)
+			return math.max(def.handling.maxSpeed, override or 0) * multiplier
 		end
 	end
 	return FOOT_MAX_SPEED
@@ -111,6 +114,7 @@ end
 function AntiCheatService.Start()
 	Players.PlayerRemoving:Connect(function(player)
 		samples[player] = nil
+		speedOverrides[player] = nil
 	end)
 	Players.PlayerAdded:Connect(function(player)
 		player.CharacterAdded:Connect(function()
@@ -158,6 +162,36 @@ end
 function AntiCheatService.GetStrikes(player: Player): number
 	local sample = samples[player]
 	return if sample then sample.strikes else 0
+end
+
+-- Studio-only live tuning (DevService "SetSpeedCap"): the allowed distance for `vehicleId` uses
+-- math.max(definition maxSpeed, maxSpeed) for this player. nil / <= 0 clears the override.
+-- Overrides are session state and vanish on PlayerRemoving.
+function AntiCheatService.SetSpeedOverride(player: Player, vehicleId: string, maxSpeed: number?)
+	if type(vehicleId) ~= "string" then
+		return
+	end
+	local value = tonumber(maxSpeed)
+	local entry = speedOverrides[player]
+	if value == nil or value ~= value or value <= 0 or value == math.huge then
+		if entry then
+			entry[vehicleId] = nil
+			if next(entry) == nil then
+				speedOverrides[player] = nil
+			end
+		end
+		return
+	end
+	if not entry then
+		entry = {}
+		speedOverrides[player] = entry
+	end
+	entry[vehicleId] = value
+end
+
+function AntiCheatService.GetSpeedOverride(player: Player, vehicleId: string): number?
+	local entry = speedOverrides[player]
+	return entry and entry[vehicleId] or nil
 end
 
 -- Runs one sampling pass immediately (used by tests and by services that want a fresh check).

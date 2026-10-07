@@ -546,6 +546,30 @@ local function doDespawn(player: Player, record: VehicleRecord)
 	clearRecord(player, record, true)
 end
 
+-- Shared placement path for Recover and TeleportTo: `cf` is the final chassis pose (already at
+-- ride height). A riding player moves with the model and the anti-cheat sampler is told; a parked
+-- vehicle moves alone and stays anchored.
+local function placeVehicle(player: Player, record: VehicleRecord, cf: CFrame, moveRider: boolean)
+	zeroVelocity(record)
+	record.model:PivotTo(cf)
+	syncAlign(record.chassis)
+	if moveRider then
+		-- The rider is welded to the seat; move the character explicitly so it never lags behind.
+		local character = player.Character
+		if character then
+			pcall(function()
+				character:PivotTo(record.seat.CFrame + Vector3.new(0, 1.5, 0))
+			end)
+		end
+		-- Only a riding player was moved; a Parked move shifts the vehicle alone, so the
+		-- character sampler must not be reset for it.
+		noteTeleport(player, 3, record.chassis.Position)
+	else
+		record.chassis.Anchored = true
+	end
+	record.lastSafePosition = cf.Position
+end
+
 local function doRecover(player: Player, record: VehicleRecord): boolean
 	local def = definitionFor(record)
 	local previous = record.state
@@ -554,24 +578,7 @@ local function doRecover(player: Player, record: VehicleRecord): boolean
 	end
 	setState(player, record, "Recovering")
 	local cf = safeRespawnCFrame(record.lastSafePosition, def.mask, def.handling.rideHeight)
-	zeroVelocity(record)
-	record.model:PivotTo(cf)
-	syncAlign(record.chassis)
-	if previous == "Driving" then
-		-- The rider is welded to the seat; move the character explicitly so it never lags behind.
-		local character = player.Character
-		if character then
-			pcall(function()
-				character:PivotTo(record.seat.CFrame + Vector3.new(0, 1.5, 0))
-			end)
-		end
-		-- Only a riding player was moved; a Parked recover moves the vehicle alone, so the
-		-- character sampler must not be reset for it.
-		noteTeleport(player, 3, record.chassis.Position)
-	else
-		record.chassis.Anchored = true
-	end
-	record.lastSafePosition = cf.Position
+	placeVehicle(player, record, cf, previous == "Driving")
 	record.lastRecoverAt = os.clock()
 	setState(player, record, previous)
 	return true
@@ -760,6 +767,28 @@ function VehicleService.Recover(player: Player)
 		return fail("WrongState", "Can't recover right now")
 	end
 	return ok()
+end
+
+-- Studio tooling (DevService "Teleport"): moves the spawned vehicle to `groundCFrame`, a pose at
+-- road level; the chassis is placed `handling.rideHeight` above it facing the pose's flat look
+-- direction, through the same placement path as Recover (zero velocity, Align sync,
+-- lastSafePosition). While Driving the rider moves with the model and AntiCheat is told
+-- (NotePlausibleTeleport 3 s); a Parked vehicle moves alone. No cooldown.
+function VehicleService.TeleportTo(player: Player, groundCFrame: CFrame)
+	if typeof(groundCFrame) ~= "CFrame" then
+		return fail("Invalid", "Invalid destination")
+	end
+	local record = records[player]
+	if not record then
+		return fail("NotFound", "No vehicle")
+	end
+	if record.state ~= "Driving" and record.state ~= "Parked" then
+		return fail("WrongState", "Can't teleport right now")
+	end
+	local def = definitionFor(record)
+	local target = CFrame.lookAlong(groundCFrame.Position + Vector3.new(0, def.handling.rideHeight, 0), flatLook(groundCFrame))
+	placeVehicle(player, record, target, record.state == "Driving")
+	return ok({ position = target.Position, state = record.state })
 end
 
 function VehicleService.GetVehicle(player: Player): VehicleRecord?

@@ -385,6 +385,41 @@ local function onProfileLoaded(player: Player, profile: Profile)
 	setStep(player, resume)
 end
 
+-- Studio tooling (DevService "SkipTutorial"): completes the tutorial through the normal step-9
+-- path (completion bonus, generator enabled, TutorialUpdated). Returns false when the profile is
+-- missing or already completed. Outstanding tutorial orders are left to the caller.
+function TutorialService.Complete(player: Player): boolean
+	local profile = getProfile(player)
+	if not profile then
+		return false
+	end
+	local state = states[player]
+	if not state then
+		if profile.tutorial.completed then
+			return false
+		end
+		state = { step = tonumber(profile.tutorial.step) or 0, firstOrderId = nil, secondOrderId = nil }
+		states[player] = state
+	end
+	if state.step >= STEP_DONE then
+		return false
+	end
+	setStep(player, STEP_DONE)
+	return true
+end
+
+-- Studio tooling (DevService "ResetProfile"): forgets the in-session state and re-runs the
+-- profile-load path, so a profile whose tutorial fields were reset starts again at step 0.
+function TutorialService.Restart(player: Player): boolean
+	local profile = getProfile(player)
+	if not profile then
+		return false
+	end
+	states[player] = nil
+	onProfileLoaded(player, profile)
+	return true
+end
+
 function TutorialService.Init(context)
 	ctx = context
 	tutorialDestinations = nil
