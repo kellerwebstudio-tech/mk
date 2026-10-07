@@ -46,6 +46,12 @@ local ROAD_SEARCH_DISTANCE = 40 -- max distance a road influences elevation look
 local SLOPE_EPSILON = 0.2
 
 local GROUND_GRASS = Enum.Material.Grass
+-- The walkable ground is made of large anchored Parts (crisp, no terrain smoothing or grass
+-- blades poking through roads). Terrain sits GROUND_THICKNESS below it and only shapes the canal.
+local GROUND_THICKNESS = 2
+local GROUND_TOP_OFFSET = -0.1 -- ground top sits just under road tops so coplanar faces never z-fight
+local GROUND_COLOR = Color3.fromRGB(104, 158, 70)
+local GROUND_MARGIN = 64
 local CONCRETE_COLOR = Color3.fromRGB(200, 200, 196)
 local CURB_COLOR = Color3.fromRGB(180, 180, 176)
 
@@ -449,19 +455,33 @@ local function buildTerrain(layout)
 	end
 	local groundY = layout.groundY or 0
 	local bounds = layout.bounds or { minX = -512, maxX = 512, minZ = -512, maxZ = 512 }
-	local width = (bounds.maxX - bounds.minX) + 64
-	local depth = (bounds.maxZ - bounds.minZ) + 64
+	local width = (bounds.maxX - bounds.minX) + GROUND_MARGIN * 2
+	local depth = (bounds.maxZ - bounds.minZ) + GROUND_MARGIN * 2
 	local cx = (bounds.minX + bounds.maxX) / 2
 	local cz = (bounds.minZ + bounds.maxZ) / 2
+	-- Terrain top sits under the part-based ground layer (see buildGround).
+	local terrainTop = groundY + GROUND_TOP_OFFSET - GROUND_THICKNESS
+	local function fillY(x, z, w, d, fromY, toY, material)
+		local height = toY - fromY
+		if height <= 0 then
+			return
+		end
+		terrain:FillBlock(CFrame.new(x, fromY + height / 2, z), Vector3.new(w, height, d), material)
+	end
 	local ok, err = pcall(function()
-		terrain:FillBlock(CFrame.new(cx, groundY - 4, cz), Vector3.new(width, 8, depth), GROUND_GRASS)
+		pcall(function()
+			terrain.Decoration = false -- no grass blades through roads and pads
+		end)
+		fillY(cx, cz, width, depth, terrainTop - 8, terrainTop, GROUND_GRASS)
 		for _, water in ipairs(layout.water or {}) do
 			local surfaceY = water.surfaceY or (groundY - 1)
 			local waterDepth = water.depth or 6
-			-- Basin: slate walls/floor 2 studs thick around the water volume, then the water itself.
-			terrain:FillBlock(CFrame.new(water.x, surfaceY - (waterDepth + 2) / 2, water.z), Vector3.new(water.w + 4, waterDepth + 2, water.d + 4), Enum.Material.Slate)
-			terrain:FillBlock(CFrame.new(water.x, surfaceY - waterDepth / 2 + 2, water.z), Vector3.new(water.w, waterDepth + 4, water.d), Enum.Material.Air)
-			terrain:FillBlock(CFrame.new(water.x, surfaceY - waterDepth / 2, water.z), Vector3.new(water.w, waterDepth, water.d), Enum.Material.Water)
+			local floorY = surfaceY - waterDepth
+			-- Basin: slate walls/floor 2 studs thick around the water volume, up to the ground underside,
+			-- then carve the inside and fill the water.
+			fillY(water.x, water.z, water.w + 4, water.d + 4, floorY - 2, terrainTop, Enum.Material.Slate)
+			fillY(water.x, water.z, water.w, water.d, floorY, terrainTop + 4, Enum.Material.Air)
+			fillY(water.x, water.z, water.w, water.d, floorY, surfaceY, Enum.Material.Water)
 		end
 	end)
 	if not ok then
@@ -470,6 +490,97 @@ local function buildTerrain(layout)
 end
 
 -------------------------------------------------------------------------------
+-- Ground layer (parts)
+-------------------------------------------------------------------------------
+
+-- Axis-aligned rectangle subtraction: returns the pieces of `rect` outside `hole`.
+local function subtractRect(rect, hole)
+	local overlaps = hole.minX < rect.maxX and hole.maxX > rect.minX and hole.minZ < rect.maxZ and hole.maxZ > rect.minZ
+	if not overlaps then
+		return { rect }
+	end
+	local pieces = {}
+	if hole.minX > rect.minX then
+		table.insert(pieces, { minX = rect.minX, maxX = hole.minX, minZ = rect.minZ, maxZ = rect.maxZ })
+	end
+	if hole.maxX < rect.maxX then
+		table.insert(pieces, { minX = hole.maxX, maxX = rect.maxX, minZ = rect.minZ, maxZ = rect.maxZ })
+	end
+	local midMinX = math.max(rect.minX, hole.minX)
+	local midMaxX = math.min(rect.maxX, hole.maxX)
+	if hole.minZ > rect.minZ then
+		table.insert(pieces, { minX = midMinX, maxX = midMaxX, minZ = rect.minZ, maxZ = hole.minZ })
+	end
+	if hole.maxZ < rect.maxZ then
+		table.insert(pieces, { minX = midMinX, maxX = midMaxX, minZ = hole.maxZ, maxZ = rect.maxZ })
+	end
+	return pieces
+end
+
+-- Returns the ground rectangles (bounds + margin minus water) without creating instances.
+local function groundRects(layout)
+	local bounds = layout.bounds or { minX = -512, maxX = 512, minZ = -512, maxZ = 512 }
+	local rects = { {
+		minX = bounds.minX - GROUND_MARGIN,
+		maxX = bounds.maxX + GROUND_MARGIN,
+		minZ = bounds.minZ - GROUND_MARGIN,
+		maxZ = bounds.maxZ + GROUND_MARGIN,
+	} }
+	for _, water in ipairs(layout.water or {}) do
+		local hole = {
+			minX = water.x - water.w / 2,
+			maxX = water.x + water.w / 2,
+			minZ = water.z - water.d / 2,
+			maxZ = water.z + water.d / 2,
+		}
+		local next = {}
+		for _, rect in ipairs(rects) do
+			for _, piece in ipairs(subtractRect(rect, hole)) do
+				if piece.maxX - piece.minX > 0.5 and piece.maxZ - piece.minZ > 0.5 then
+					table.insert(next, piece)
+				end
+			end
+		end
+		rects = next
+	end
+	return rects
+end
+CityBuilder.groundRects = groundRects
+
+-- Large anchored Grass parts forming the walkable ground (top at groundY + GROUND_TOP_OFFSET).
+local function buildGround(layout, parent: Instance)
+	local groundY = layout.groundY or 0
+	local folder = newFolder("Ground", parent)
+	local top = groundY + GROUND_TOP_OFFSET
+	local MAX_PART = 2000 -- Roblox parts cap at 2048 studs per axis
+	for _, rect in ipairs(groundRects(layout)) do
+		local w = rect.maxX - rect.minX
+		local d = rect.maxZ - rect.minZ
+		local nx = math.max(1, math.ceil(w / MAX_PART))
+		local nz = math.max(1, math.ceil(d / MAX_PART))
+		for ix = 0, nx - 1 do
+			for iz = 0, nz - 1 do
+				local x0 = rect.minX + w * ix / nx
+				local x1 = rect.minX + w * (ix + 1) / nx
+				local z0 = rect.minZ + d * iz / nz
+				local z1 = rect.minZ + d * (iz + 1) / nz
+				mk({
+					name = "Ground",
+					size = Vector3.new(x1 - x0, GROUND_THICKNESS, z1 - z0),
+					cframe = CFrame.new((x0 + x1) / 2, top - GROUND_THICKNESS / 2, (z0 + z1) / 2),
+					color = GROUND_COLOR,
+					material = GROUND_GRASS,
+					parent = folder,
+					collide = true,
+					query = true,
+					castShadow = false,
+				})
+			end
+		end
+	end
+	return folder
+end
+
 -- Roads, sidewalks, markings (built per RouteGraph edge so T-junctions are split)
 -------------------------------------------------------------------------------
 
@@ -1767,6 +1878,7 @@ function CityBuilder.build(layout, folders, graph)
 	end
 
 	buildTerrain(layout)
+	buildGround(layout, folders.city)
 	buildRoads(layout, routeGraph, folders.city)
 	local bodies = buildBuildings(layout, folders.city)
 	local businesses = buildBusinesses(layout, positions, folders.pickup, bodies)

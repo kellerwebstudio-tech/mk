@@ -2,6 +2,9 @@
 
 Updated after the Phase 2 review. Severity: H = will affect players, M = edge case / quality, L = polish.
 
+## Live findings (from the owner's first Studio run)
+- **Everything looked half-sunk into the ground (fixed in `CityBuilder`)**: roads, pads and bases were placed flush with the smooth-terrain surface at y = 0, so the terrain (and its grass decoration) rendered through them. The ground is now a set of large anchored Grass parts whose top sits 0.1 stud under the road surface, terrain is pushed 2 studs below that with `Decoration` off, and it only shapes the canal basin. Not yet re-checked in Studio.
+
 ## Not verified live (needs Roblox Studio)
 - **Vehicle feel (H)**: handling constants in `VehicleDefinitions` (acceleration, turn rates, ride height gain, camera offsets) were reasoned, never driven. Expect a tuning pass. The ground-follow model cannot flip, but ramp transitions and curb climbs need to be watched for visual pops.
 - **Seat input (H)**: driving input relies on `VehicleSeat.ThrottleFloat/SteerFloat` being delivered to the occupant (seat enabled while riding). If a device reports zero, `InputController` falls back to keys / thumbstick / `Humanoid.MoveDirection`; confirm on touch and gamepad.

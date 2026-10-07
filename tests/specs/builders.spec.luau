@@ -229,6 +229,43 @@ describe("CityBuilder", function()
 		for _, name in ipairs({ "Roads", "Sidewalks", "Markings", "Buildings", "Landmarks", "Props", "ParkedVehicles" }) do
 			expect(folders.city:FindFirstChild(name)).toBeTruthy()
 		end
+
+		-- Ground layer: large Grass parts just under the road surface, with the canal cut out,
+		-- and the terrain lowered beneath them with grass decoration off.
+		local ground = folders.city:FindFirstChild("Ground")
+		expect(ground).toBeTruthy()
+		local groundParts = ground:GetChildren()
+		expect(#groundParts).toBeGreaterThan(0)
+		local function groundAt(x, z)
+			for _, part in ipairs(groundParts) do
+				local half = part.Size / 2
+				local p = part.Position
+				if x >= p.X - half.X and x <= p.X + half.X and z >= p.Z - half.Z and z <= p.Z + half.Z then
+					return part
+				end
+			end
+			return nil
+		end
+		local hubPart = groundAt(layout.hub.spawn.x, layout.hub.spawn.z)
+		expect(hubPart).toBeTruthy()
+		expect(hubPart.Position.Y + hubPart.Size.Y / 2).toBeCloseTo(layout.groundY - 0.1, 1e-6) -- top just under road tops
+		expect(hubPart.CanCollide).toBe(true)
+		expect(hubPart.CanQuery).toBe(true) -- vehicle ground rays must hit it
+		expect(hubPart.Material).toBe(Enum.Material.Grass)
+		for _, part in ipairs(groundParts) do
+			expect(part.Size.X).toBeLessThan(2049)
+			expect(part.Size.Z).toBeLessThan(2049)
+		end
+		for _, water in ipairs(layout.water) do
+			expect(groundAt(water.x, water.z)).toBeNil() -- canal is open water
+			expect(groundAt(water.x + water.w / 2 + 2, water.z)).toBeTruthy() -- bank right beside it
+		end
+		local terrain = workspace:FindFirstChildOfClass("Terrain")
+		expect(terrain.Decoration).toBe(false)
+		local fills = terrain._fills
+		local slab = fills[1]
+		expect(slab[4]).toBe(Enum.Material.Grass)
+		expect(slab[2].Position.Y + slab[3].Y / 2).toBeCloseTo(layout.groundY - 0.1 - 2, 1e-6) -- terrain top under the ground parts
 		expect(#folders.city.Roads:GetChildren()).toBeGreaterThan(0)
 		expect(#folders.city.Sidewalks:GetChildren()).toBeGreaterThan(0)
 
