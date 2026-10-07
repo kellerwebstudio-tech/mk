@@ -216,6 +216,9 @@ VehicleDefinitions.Vehicles = {
 			},
 		},
 		-- Imported Meshy bicycle (assets/meshes/Bicycle). Used only while MeshAssets.hasBody("Bicycle").
+		-- body.offset y/z are the OBJ bounding-box centre; x is 0 on purpose: the box is asymmetric
+		-- around the frame (centre x = 0.154) and centring it on the chassis puts the tyre contact
+		-- line within 0.02 stud of the chassis centreline, under the seat at x = 0.
 		mesh = {
 			body = { size = { 2.682, 3.647, 6.2 }, offset = { 0, 0.323, 0 } },
 			seatOffset = { 0, 1.6, 0.5 },
@@ -293,6 +296,8 @@ VehicleDefinitions.Vehicles = {
 			},
 		},
 		-- Imported Meshy scooter (assets/meshes/Scooter). Used only while MeshAssets.hasBody("Scooter").
+		-- As for the bicycle, offset x is 0 (bounding-box centre x = 0.321; tyres then sit ~0.07 stud
+		-- from the chassis centreline instead of 0.4).
 		mesh = {
 			body = { size = { 2.985, 4.273, 6.4 }, offset = { 0, 0.637, 0 } },
 			seatOffset = { 0, 0.95, 0.3 },

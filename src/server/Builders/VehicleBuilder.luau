@@ -46,6 +46,9 @@ VehicleBuilder.MESH_BODY_NAME = "MeshBody"
 -- retried this server session (CreateMeshPartAsync yields and would otherwise stall every spawn).
 local meshTemplates: { [string]: MeshPart } = {}
 local meshFailed: { [string]: boolean } = {}
+-- Keys whose CreateMeshPartAsync call is in flight: concurrent builders (display publish at start,
+-- a depot van, a spawn) wait for that one call instead of each requesting the asset again.
+local meshPending: { [string]: boolean } = {}
 
 local function rgb(c: RGB): Color3
 	return Color3.fromRGB(c[1], c[2], c[3])
@@ -106,9 +109,13 @@ local function templateKey(meshId: number, textureId: number): string
 end
 
 -- Creates (once) and returns the MeshPart template for an asset pair, or nil when the load failed.
--- Yields on the first call for an id (AssetService:CreateMeshPartAsync); never throws.
+-- Yields on the first call for an id (AssetService:CreateMeshPartAsync) and while another thread's
+-- first call for the same pair is in flight; never throws.
 local function getMeshTemplate(meshId: number, textureId: number, label: string): MeshPart?
 	local key = templateKey(meshId, textureId)
+	while meshPending[key] do
+		task.wait()
+	end
 	local cached = meshTemplates[key]
 	if cached then
 		return cached
@@ -116,12 +123,14 @@ local function getMeshTemplate(meshId: number, textureId: number, label: string)
 	if meshFailed[key] then
 		return nil
 	end
+	meshPending[key] = true
 	local okCreate, result = pcall(function()
 		return AssetService:CreateMeshPartAsync(Content.fromAssetId(meshId), {
 			CollisionFidelity = Enum.CollisionFidelity.Box,
 			RenderFidelity = Enum.RenderFidelity.Automatic,
 		})
 	end)
+	meshPending[key] = nil
 	if not okCreate or typeof(result) ~= "Instance" or not (result :: Instance):IsA("MeshPart") then
 		meshFailed[key] = true
 		warn(string.format("[VehicleBuilder] mesh %d (%s) failed to load, using generated parts: %s", meshId, label, tostring(if okCreate then "no MeshPart returned" else result)))

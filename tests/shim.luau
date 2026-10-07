@@ -5196,7 +5196,9 @@ defclass("InsertService", "Instance", { methods = { LoadAsset = function() fail(
 -- Content (Content.fromAssetId / fromUri), Size (1, 1, 1) and the requested fidelities; every call is
 -- recorded in shim.assetService.calls ({ method, content, options, meshId }). The next
 -- shim.assetService.failNextCalls calls raise "CreateMeshPartAsync failed (simulated)" instead.
-shim.assetService = { calls = {}, failNextCalls = 0 }
+-- shim.assetService.latency = s makes each call yield (task.wait) that long first, like the real
+-- async call, so specs can exercise concurrent loads.
+shim.assetService = { calls = {}, failNextCalls = 0, latency = 0 }
 local function contentAssetId(content)
 	if type(content) == "table" then
 		if type(content.AssetId) == "number" then return content.AssetId end
@@ -5218,6 +5220,7 @@ defclass("AssetService", "Instance", { methods = {
 		local a = shim.assetService
 		local assetId = contentAssetId(content)
 		table.insert(a.calls, { method = "CreateMeshPartAsync", content = content, options = options, meshId = assetId })
+		if (a.latency or 0) > 0 then task.wait(a.latency) end
 		if (a.failNextCalls or 0) > 0 then
 			a.failNextCalls -= 1
 			fail(2, "CreateMeshPartAsync failed (simulated)")
@@ -5652,7 +5655,7 @@ function shim.reset()
 	shim.remoteLog = {}
 	shim._requireStack = {}
 	shim.datastore = { data = {}, failNextCalls = 0, latency = 0, calls = {} }
-	shim.assetService = { calls = {}, failNextCalls = 0 }
+	shim.assetService = { calls = {}, failNextCalls = 0, latency = 0 }
 	local simulate = shim.marketplace.simulatePurchase
 	shim.marketplace = { prompts = {}, ownedPasses = {}, productInfo = {}, simulatePurchase = simulate }
 	shim.input.lastInputType = nil

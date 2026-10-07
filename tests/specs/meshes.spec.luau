@@ -316,6 +316,64 @@ describe("VehicleBuilder mesh path", function()
 		expect(VehicleBuilder.build("Van", 4, nil).Body:FindFirstChild("MeshBody")).toBeTruthy()
 	end)
 
+	it("requests an in-flight template once when builds race during the load (publish + depot + spawn)", function()
+		setIds(MeshAssets, { Van = { 5001, 5002 } })
+		shim.assetService.latency = 0.2
+		local models = {}
+		task.spawn(function()
+			table.insert(models, VehicleBuilder.buildDisplay("Van", nil))
+		end)
+		task.spawn(function()
+			table.insert(models, VehicleBuilder.build("Van", 1, nil))
+		end)
+		task.spawn(function()
+			table.insert(models, VehicleBuilder.build("Van", 2, nil))
+		end)
+		expect(#models).toBe(0) -- all three are waiting on the one async call
+		shim.advance(1)
+		expect(#models).toBe(3)
+		expect(meshCalls()).toBe(1)
+		local seen = {}
+		for _, model in ipairs(models) do
+			local body = model.Body:FindFirstChild("MeshBody")
+			expect(body).toBeTruthy()
+			expect(body.MeshId).toBe("rbxassetid://5001")
+			expect(seen[body]).toBeNil()
+			seen[body] = true
+			expect(model:GetAttribute("UsesMesh")).toBe(true)
+		end
+		expect(#shim.warnings).toBe(0)
+		-- Later builds hit the cache without yielding.
+		local later = VehicleBuilder.build("Van", 3, nil)
+		expect(later.Body:FindFirstChild("MeshBody")).toBeTruthy()
+		expect(meshCalls()).toBe(1)
+	end)
+
+	it("a failed in-flight load warns once and every racing build falls back to generated parts", function()
+		setIds(MeshAssets, { Van = { 5001, 5002 } })
+		shim.assetService.latency = 0.2
+		shim.assetService.failNextCalls = 1
+		local models = {}
+		task.spawn(function()
+			table.insert(models, VehicleBuilder.build("Van", 1, nil))
+		end)
+		task.spawn(function()
+			table.insert(models, VehicleBuilder.build("Van", 2, nil))
+		end)
+		shim.advance(1)
+		expect(#models).toBe(2)
+		expect(meshCalls()).toBe(1)
+		expect(#shim.warnings).toBe(1)
+		local def = VehicleDefinitions.get("Van")
+		for _, model in ipairs(models) do
+			expect(model.Body:FindFirstChild("MeshBody")).toBeNil()
+			expect(#model.Body:GetChildren()).toBe(#def.visual.parts)
+			expect(model:GetAttribute("UsesMesh")).toBe(false)
+			expect(model.Chassis.DismountAttachment.Position).toBeCloseTo(vecOf(def.dismountOffset), 1e-6)
+		end
+		expect(VehicleBuilder.usesMesh("Van")).toBe(false)
+	end)
+
 	it("buildDisplay uses the mesh, anchored, with no constraints", function()
 		setIds(MeshAssets, { Scooter = { 7001, 7002 } })
 		local display = VehicleBuilder.buildDisplay("Scooter", nil)
