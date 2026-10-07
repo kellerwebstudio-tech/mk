@@ -21,6 +21,10 @@ This repository is a complete **Rojo** project (Luau source + authored city data
 - **No live Roblox Studio playtest has been run** by the authors of this repository. Physics tuning values, UI layout on real devices and DataStore behaviour are reasoned, not measured. Follow the manual playtest script in `docs/VERIFICATION.md` before publishing.
 - Monetization is disabled (no product IDs). Sound ids are placeholders (see "Audio").
 
+## Prebuilt place file
+
+`dist/DeliveryDashCity.rbxl` is a prebuilt place (built with Rojo 7.5.1 from this commit). Open it in Roblox Studio, enable *Studio Access to API Services*, and press Play. Rebuild it with `rojo build default.project.json -o dist/DeliveryDashCity.rbxl` after editing the source.
+
 ## Installation (Rojo, recommended)
 
 1. Install Roblox Studio and the [Rojo](https://rojo.space) Studio plugin.
