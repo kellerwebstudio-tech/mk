@@ -157,6 +157,44 @@ Plots are 60 × 50 studs.
 
 Roads, sidewalks, lane markings, ramps, embankments, the ground, the canal (terrain water), lighting, UI icons (text glyphs), sounds (`assets/audio`).
 
+## Face budgets (maximum triangles per model)
+
+Counts are **triangles after triangulation** (Blender quads ≈ half). Hard engine limit: 10,000 triangles per MeshPart on import; stay far below it. Set `RenderFidelity = Automatic` on every MeshPart so Roblox builds LODs, and `CollisionFidelity = Box` (collision comes from the `Collider` part anyway).
+
+| Model | Max tris | Model | Max tris |
+|---|---|---|---|
+| Bicycle (whole, incl. wheels) | 3,000 | Scooter | 3,000 |
+| Van | 4,000 | each wheel mesh | 300 |
+| FoodBag | 200 | PizzaBox | 100 |
+| DrinkCarrier | 200 | GroceryBag | 200 |
+| Parcel | 120 | CourierVest | 150 |
+| Pedestrian / Customer / Staff / Worker / Driver (each) | 1,200 | | |
+| House_A/B/C (each) | 1,000 | Shop_A/B | 1,500 |
+| Apartment_A/B | 2,000 | Office_A/B | 1,500 |
+| Warehouse_A/B/C | 1,500 | Business_* (each of the 4) | 3,000 |
+| DeliveryHub | 2,500 | BeaconTower | 4,000 |
+| Door | 100 | Doorbell | 40 |
+| AddressSign | 40 | ArrivalPad / PickupPad | 12 |
+| Counter | 300 | RollerDoor | 150 |
+| Awning (each width) | 100 | LoadingBay | 300 |
+| Lamp | 150 | Tree_A/B/C | 500 |
+| Container | 80 | Bench | 250 |
+| Hydrant | 300 | Crate | 60 |
+| Dumpster | 250 | Cone | 150 |
+| Planter | 300 | StreetSign | 80 |
+| Railing segment | 120 | VehiclePad | 20 |
+| Kiosk | 400 | ParkedCar | 1,500 |
+| ParkedTruck | 1,200 | PlazaFountain | 2,000 |
+| WaterTower | 2,500 | ParkGazebo | 1,500 |
+| DepotOffice | 1,500 | DepotSign | 150 |
+| DepotFence segment | 60 | DepotGate | 100 |
+| DepotParkingLine | 10 | DepotPlanter | 300 |
+| DepotFlag | 200 | DepotLights | 600 |
+| ForkliftStatic | 1,500 | NavMarkerPickup | 200 |
+| NavMarkerDeliver | 12 | NavArrow | 20 |
+
+Why these numbers: with 166 buildings, 153 lamps and 112 trees in view range the city stays near 450k triangles total, which leaves room for eight vehicles, packages, NPCs and UI on mid-range phones. High-count props (lamps, trees, containers) are deliberately tiny because they are repeated the most.
+
 ## Totals
 
 Vehicles 3 (+1 optional), packages 5, NPC figures 6 (+ variants), buildings 18 kit models, street pieces 9, props 13 (+ variants), parked vehicles 2 (+ variants), landmarks 3 required (+ 3 optional), depot 7 (+1 optional), nav markers 2. **About 70 models**, roughly 85 with colour variants.
