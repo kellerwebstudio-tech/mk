@@ -702,8 +702,8 @@ describe("EmbeddedMeshController", function()
 		expect(#shim.warnings).toBe(0)
 	end)
 
-	it("warns once on a decode failure and shows the placeholder as a semi-transparent box", function()
-		clientSetup({ "Van" }, { failPng = true })
+	it("warns once on a geometry failure (naming the stage) and shows the placeholder as a semi-transparent box", function()
+		clientSetup({ "Van" }, { failMesh = true })
 		local before = VehicleBuilder.build("Van", 1, nil)
 		before.Parent = workspace
 		Controller.Start()
@@ -711,9 +711,14 @@ describe("EmbeddedMeshController", function()
 		expect(Controller.IsReady("Van")).toBe(false)
 		expect(Controller.HasFailed("Van")).toBe(true)
 		expect(Controller.GetMeshPart("Van")).toBeNil()
-		expect(#shim.warnings).toBe(1)
+		-- The entry's warning names the stage and part; the run ends with one summary warning.
+		expect(#shim.warnings).toBe(2)
 		expect(shim.warnings[1]).toMatch("EmbeddedMeshController")
-		expect(shim.warnings[1]).toMatch("Van")
+		expect(shim.warnings[1]).toMatch("Van: embedded mesh failed")
+		expect(shim.warnings[1]).toMatch("decodeMesh Van/Body: ")
+		expect(shim.warnings[1]).toMatch("bad DDCM")
+		expect(shim.warnings[2]).toMatch("decode finished: 0 of 1 entries ready")
+		expect(shim.warnings[2]).toMatch("failed: Van")
 		expect(placeholderOf(before).Transparency).toBeCloseTo(Controller.FAILED_TRANSPARENCY, 1e-6)
 		expect(placeholderOf(before):FindFirstChild("EmbeddedMesh")).toBeNil()
 		-- Placeholders added afterwards get the same treatment; nothing is retried.
@@ -722,7 +727,61 @@ describe("EmbeddedMeshController", function()
 		expect(placeholderOf(after).Transparency).toBeCloseTo(Controller.FAILED_TRANSPARENCY, 1e-6)
 		expect(Controller.Load("Van")).toBe(false)
 		expect(callsOf("CreateMeshPartAsync")).toBe(0)
+		expect(#shim.warnings).toBe(2)
+		expect(#shim.prints).toBe(0)
+	end)
+
+	it("a texture failure keeps the mesh and shows it untextured instead of a box", function()
+		clientSetup({ "Van" }, { failPng = true })
+		local model = VehicleBuilder.build("Van", 1, nil)
+		model.Parent = workspace
+		Controller.Start()
+		shim.advance(0.2)
+		expect(Controller.IsReady("Van")).toBe(true)
+		expect(Controller.HasFailed("Van")).toBe(false)
 		expect(#shim.warnings).toBe(1)
+		expect(shim.warnings[1]).toMatch("Van: texture failed, the mesh shows untextured: decodePng: ")
+		expect(shim.warnings[1]).toMatch("bad png")
+		local template = Controller.GetMeshPart("Van")
+		expect(template).toBeTruthy()
+		expect(template.TextureContent).toBeNil()
+		expect(template.Color).toEqual(Color3.fromRGB(163, 162, 165))
+		expect(callsOf("CreateEditableImage")).toBe(0)
+		local dressed = placeholderOf(model):FindFirstChild("EmbeddedMesh")
+		expect(dressed).toBeTruthy()
+		expect(dressed.MeshContent.Object).toBe(template.MeshContent.Object)
+		expect(dressed.TextureContent).toBeNil()
+		expect(placeholderOf(model).Transparency).toBe(1)
+		-- The success line says so, and the summary counts the entry as ready.
+		expect(#shim.prints).toBe(2)
+		expect(shim.prints[1]).toMatch("Van: ready %(1 part, untextured")
+		expect(shim.prints[2]).toMatch("decode finished: 1 of 1 entries ready")
+	end)
+
+	it("names the CreateMeshPartAsync stage when the engine call throws", function()
+		clientSetup({ "Van" })
+		shim.assetService.failNextCalls = 1
+		Controller.Start()
+		shim.advance(0.2)
+		expect(Controller.HasFailed("Van")).toBe(true)
+		expect(shim.warnings[1]).toMatch("CreateMeshPartAsync Van/Body: ")
+		expect(shim.warnings[1]).toMatch("simulated")
+	end)
+
+	it("explains a nil EditableMesh / EditableImage (memory budget or Mesh / Image APIs off)", function()
+		clientSetup({ "Van" })
+		shim.assetService.editableBudgetExhausted = true
+		Controller.Start()
+		shim.advance(0.2)
+		expect(Controller.HasFailed("Van")).toBe(true)
+		-- The image comes first (texture fallback), then the mesh fails the entry.
+		expect(#shim.warnings).toBe(3)
+		expect(shim.warnings[1]).toMatch("texture failed")
+		expect(shim.warnings[1]).toMatch("CreateEditableImage: AssetService:CreateEditableImage returned nil")
+		expect(shim.warnings[2]).toMatch("EditableMesh Van/Body: AssetService:CreateEditableMesh returned nil")
+		expect(shim.warnings[2]).toMatch("editable memory budget")
+		expect(shim.warnings[2]).toMatch("Enable Mesh / Image APIs")
+		expect(shim.warnings[3]).toMatch("decode finished: 0 of 1")
 	end)
 
 	it("a geometry failure is reported the same way and other vehicles still load", function()
@@ -731,14 +790,61 @@ describe("EmbeddedMeshController", function()
 		shim.advance(0.2)
 		expect(Controller.HasFailed("Van")).toBe(true)
 		expect(Controller.HasFailed("Bicycle")).toBe(true)
-		expect(#shim.warnings).toBe(2)
+		expect(#shim.warnings).toBe(3) -- two entries + the summary
+		expect(shim.warnings[3]).toMatch("failed: Bicycle, Van")
 		-- A fresh decoder set that works lets a later Load succeed after a reset.
 		Controller._stop()
 		Controller._setDecoders(decoderStub({ "Van" }))
 		Controller.Start()
 		shim.advance(0.2)
 		expect(Controller.IsReady("Van")).toBe(true)
-		expect(#shim.warnings).toBe(2)
+		expect(#shim.warnings).toBe(3)
+	end)
+
+	it("attaches copies through ApplyMesh so they keep the EditableMesh even when Clone drops object content", function()
+		clientSetup({ "Van" })
+		shim.assetService.cloneDropsObjectContent = true
+		Controller.Start()
+		shim.advance(0.2)
+		local template = Controller.GetMeshPart("Van")
+		local model = VehicleBuilder.build("Van", 1, nil)
+		model.Parent = workspace
+		local dressed = placeholderOf(model):FindFirstChild("EmbeddedMesh")
+		expect(dressed).toBeTruthy()
+		expect(dressed).never.toBe(template)
+		expect(dressed.MeshContent.Object).toBe(template.MeshContent.Object)
+		expect(dressed.TextureContent.Object).toBe(template.TextureContent.Object)
+		expect(dressed.Size).toEqual(template.Size)
+		expect(dressed.CollisionFidelity).toBe(template.CollisionFidelity)
+		expect(dressed.RenderFidelity).toBe(template.RenderFidelity)
+		expect(callsOf("ApplyMesh")).toBe(1)
+		expect(dressed:FindFirstChildWhichIsA("WeldConstraint")).toBeTruthy()
+		expect(#shim.warnings).toBe(0)
+
+		-- Without ApplyMesh the plain clone is used (and keeps the content when the engine does).
+		shim.assetService.cloneDropsObjectContent = false
+		shim.assetService.applyMeshUnavailable = true
+		local second = VehicleBuilder.build("Van", 2, nil)
+		second.Parent = workspace
+		local cloned = placeholderOf(second):FindFirstChild("EmbeddedMesh")
+		expect(cloned).toBeTruthy()
+		expect(cloned.MeshContent.Object).toBe(template.MeshContent.Object)
+		expect(callsOf("ApplyMesh")).toBe(1)
+		expect(#shim.warnings).toBe(0)
+
+		-- Neither path keeps the mesh: the attach is reported once per entry/part and the
+		-- placeholder is shown as a box instead of a plain grey block.
+		shim.assetService.cloneDropsObjectContent = true
+		local third = VehicleBuilder.build("Van", 3, nil)
+		third.Parent = workspace
+		expect(placeholderOf(third):FindFirstChild("EmbeddedMesh")).toBeNil()
+		expect(placeholderOf(third).Transparency).toBeCloseTo(Controller.FAILED_TRANSPARENCY, 1e-6)
+		expect(#shim.warnings).toBe(1)
+		expect(shim.warnings[1]).toMatch("Van/Body: attach failed: the attached copy lost the EditableMesh content")
+		local fourth = VehicleBuilder.build("Van", 4, nil)
+		fourth.Parent = workspace
+		expect(#shim.warnings).toBe(1)
+		expect(placeholderOf(fourth).Transparency).toBeCloseTo(Controller.FAILED_TRANSPARENCY, 1e-6)
 	end)
 
 	it("does nothing with an empty vehicle list", function()

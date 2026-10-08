@@ -1625,6 +1625,7 @@ do
 		ElasticBehavior = { "WhenScrollable", "Always", "Never" },
 		ScrollBarInset = { "None", "ScrollBar", "Always" },
 		CollisionFidelity = { "Default", "Hull", "Box", "PreciseConvexDecomposition" },
+		FluidFidelity = { "Automatic", "UseCollisionGeometry", "UsePreciseGeometry" },
 		RenderFidelity = { "Automatic", "Precise", "Performance" },
 		ParticleOrientation = { "FacingCamera", "FacingCameraWorldUp", "VelocityParallel", "VelocityPerpendicular" },
 		ParticleEmitterShape = { "Box", "Sphere", "Cylinder", "Disc" },
@@ -2732,7 +2733,21 @@ defclass("BasePart", "PVInstance", {
 
 defclass("Part", "BasePart", { defaults = { Shape = function() return Enum.PartType.Block end } })
 defclass("FormFactorPart", "BasePart")
-defclass("MeshPart", "BasePart", { defaults = { MeshId = "", TextureID = "", MeshContent = NIL, TextureContent = NIL, CollisionFidelity = function() return Enum.CollisionFidelity.Default end, RenderFidelity = function() return Enum.RenderFidelity.Automatic end }, methods = { ApplyMesh = function() end } })
+-- MeshPart:ApplyMesh(source) copies MeshContent / TextureContent (and MeshId / TextureID, the
+-- fidelities and MeshSize) from another MeshPart, like the engine; shim.assetService.applyMeshUnavailable
+-- makes it throw (older clients), and every call is recorded in shim.assetService.calls.
+defclass("MeshPart", "BasePart", { defaults = { MeshId = "", TextureID = "", MeshContent = NIL, TextureContent = NIL, DoubleSided = false, MeshSize = function() return Vector3.new(1, 1, 1) end, CollisionFidelity = function() return Enum.CollisionFidelity.Default end, RenderFidelity = function() return Enum.RenderFidelity.Automatic end, FluidFidelity = function() return Enum.FluidFidelity.Automatic end }, methods = {
+	ApplyMesh = function(self, source)
+		local a = shim.assetService
+		if a and a.applyMeshUnavailable then fail(2, "ApplyMesh is not a valid member of MeshPart") end
+		if not isInstance(source) or not priv[source].cls.isA.MeshPart then fail(2, "MeshPart:ApplyMesh expects a MeshPart, got %s", nativeTypeof(source)) end
+		if a then table.insert(a.calls, { method = "ApplyMesh", source = source, target = self }) end
+		for _, key in ipairs({ "MeshContent", "TextureContent", "MeshId", "TextureID", "CollisionFidelity", "RenderFidelity", "FluidFidelity", "MeshSize" }) do
+			local value = priv[source].props[key]
+			if value ~= nil then priv[self].props[key] = value end
+		end
+	end,
+} })
 defclass("WedgePart", "BasePart")
 defclass("CornerWedgePart", "BasePart")
 defclass("TrussPart", "BasePart", { defaults = { Size = function() return Vector3.new(2, 2, 2) end } })
@@ -5212,7 +5227,22 @@ defclass("InsertService", "Instance", { methods = { LoadAsset = function() fail(
 -- shim.assetService.failNextCalls calls raise "CreateMeshPartAsync failed (simulated)" instead.
 -- shim.assetService.latency = s makes each call yield (task.wait) that long first, like the real
 -- async call, so specs can exercise concurrent loads.
+-- shim.assetService.editableBudgetExhausted = true makes CreateEditableMesh / CreateEditableImage
+-- return nil (the engine's "editable memory budget exhausted" / "Mesh / Image APIs off" result);
+-- shim.assetService.cloneDropsObjectContent = true makes Instance:Clone() drop Content.fromObject
+-- values from MeshContent / TextureContent (a copy that no longer shows the EditableMesh).
 shim.assetService = { calls = {}, failNextCalls = 0, latency = 0 }
+local function isObjectContent(v)
+	return type(v) == "table" and getmetatable(v) ~= nil and rawget(getmetatable(v), "__type") == "Content" and rawget(v, "Object") ~= nil
+end
+table.insert(Inst.cloneHooks, function(src, copy)
+	local a = shim.assetService
+	if not (a and a.cloneDropsObjectContent) then return end
+	local props = priv[copy].props
+	for _, key in ipairs({ "MeshContent", "TextureContent" }) do
+		if isObjectContent(props[key]) then props[key] = NIL end
+	end
+end)
 local function contentAssetId(content)
 	if type(content) == "table" then
 		if type(content.AssetId) == "number" then return content.AssetId end
@@ -5325,12 +5355,20 @@ defclass("EditableImage", "Instance", { defaults = { Size = function() return Ve
 defclass("AssetService", "Instance", { methods = {
 	CreateEditableMeshAsync = function() return nil end,
 	CreateEditableMesh = function(self, options)
+		if shim.assetService.editableBudgetExhausted then
+			table.insert(shim.assetService.calls, { method = "CreateEditableMesh", options = options, result = nil })
+			return nil
+		end
 		local mesh = new("EditableMesh")
 		if type(options) == "table" and options.FixedSize ~= nil then setProp(mesh, "FixedSize", options.FixedSize == true) end
 		table.insert(shim.assetService.calls, { method = "CreateEditableMesh", options = options, result = mesh })
 		return mesh
 	end,
 	CreateEditableImage = function(self, options)
+		if shim.assetService.editableBudgetExhausted then
+			table.insert(shim.assetService.calls, { method = "CreateEditableImage", options = options, result = nil })
+			return nil
+		end
 		local image = new("EditableImage")
 		if type(options) == "table" and options.Size ~= nil then
 			if shim.typeof(options.Size) ~= "Vector2" then fail(2, "AssetService:CreateEditableImage: Size must be a Vector2") end

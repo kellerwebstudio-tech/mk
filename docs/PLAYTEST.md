@@ -5,6 +5,7 @@ No live Studio test has been run by the authors. Run these steps before publishi
 Setup: build with `rojo build -o build/DeliveryDashCity.rbxl`, open in Studio, enable *Studio Access to API Services*, use *Test → Clients and Servers → 2 players* for multiplayer steps. Watch the Output window; the server prints `Delivery Dash City server ready` and the part count.
 
 ## A. First five minutes (new profile)
+0. Before pressing Play, open View → Output. Expected after Play: `[EmbeddedMeshController] CourierVest: ready ...` and `Bicycle: ready ...` within a few seconds, one `ready` line per person over the next ~10 s, then `decode finished: 12 of 12 entries ready`. Vehicles, people and your vest show their meshes (not grey boxes). If anything stays a grey box, copy every `[EmbeddedMeshController]` line: each names the failing stage (`docs/MESHES.md`, "Runtime requirements and diagnostics").
 1. Spawn: you appear at the delivery hub on the plaza's south edge facing the plaza, within sight of the vehicle pads. HUD shows $0 and 0 Rep; a welcome banner appears. Expected: no empty area; the pads are < 30 studs away.
 2. Press Continue on the welcome. Expected: tutorial step 1 asks you to open Orders; the board shows exactly one tutorial order (Slice Street Pizza → nearby apartment, $45, no timer).
 3. Accept it. Expected: step 2 "Ride your bicycle"; a PICKUP marker/route appears; HUD mini list shows the order.

@@ -17,13 +17,15 @@ This repository is a complete **Rojo** project (Luau source + authored city data
 
 ## Honest status
 
-- Built and verified **offline only**: Luau syntax/type analysis (`luau-lsp`, 0 diagnostics), 295 unit/integration specs executed with the standalone `luau` CLI against a Roblox API mock, a `rojo build` of the place file, the city layout validator, and an adversarial multi-lens code review (33 confirmed findings fixed). See `docs/VERIFICATION.md`.
+- Built and verified **offline only**: Luau syntax/type analysis (`luau-lsp`, 0 diagnostics), 443 unit/integration specs executed with the standalone `luau` CLI against a Roblox API mock, a `rojo build` of the place file, the city layout validator, and an adversarial multi-lens code review (33 confirmed findings fixed). See `docs/VERIFICATION.md`.
 - **No live Roblox Studio playtest has been run** by the authors of this repository. Physics tuning values, UI layout on real devices and DataStore behaviour are reasoned, not measured. Follow the manual playtest script in `docs/VERIFICATION.md` before publishing.
 - Monetization is disabled (no product IDs). Sound ids are placeholders (see "Audio").
 
 ## Prebuilt place file
 
 `dist/DeliveryDashCity.rbxl` is a prebuilt place (built with Rojo 7.5.1 from this commit). Open it in Roblox Studio, enable *Studio Access to API Services*, and press Play. Rebuild it with `rojo build default.project.json -o dist/DeliveryDashCity.rbxl` after editing the source.
+
+The vehicles, people and courier vest are meshes embedded in the place and rebuilt on each client with the engine's `EditableMesh` / `EditableImage` APIs. They work in Studio as-is; **in a published experience they fail by default** until the owner (13+ age verified and ID verified) toggles **Enable Mesh / Image APIs** on the experience in the Creator Dashboard. If vehicles or people show as grey boxes, read the `[EmbeddedMeshController]` lines in the Output window (see `docs/MESHES.md`, "Runtime requirements and diagnostics").
 
 ## Installation (Rojo, recommended)
 

@@ -17,14 +17,24 @@
 --      definition's mesh.body.size for vehicles, else the part's bounding box) cached under
 --      (entryId, partName). Every loader/decoder gets an onProgress callback that task.wait()s after
 --      at most YIELD_BUDGET seconds of work. When every part is built, Loaded fires with the id.
--- Every step is pcall-wrapped: a failure warns once ("[EmbeddedMeshController] <id>: ...") and the
--- entry's placeholders (present or later) become FAILED_TRANSPARENCY grey boxes (tinted with
--- MeshColor when set) so nothing is ever invisible.
+-- Every stage is pcall-wrapped and named: a failure warns once
+-- ("[EmbeddedMeshController] <id>: <stage>: <error>", stages index / loadTexture / decodePng /
+-- CreateEditableImage / loadPart / decodeMesh / EditableMesh / CreateMeshPartAsync / TextureContent)
+-- and the entry's placeholders (present or later) become FAILED_TRANSPARENCY grey boxes (tinted
+-- with MeshColor when set) so nothing is ever invisible. A texture-only failure keeps the mesh and
+-- shows it untextured (plain grey). AssetService:CreateEditableMesh / CreateEditableImage return
+-- nil when the client's editable memory budget is exhausted or, in a published experience, when
+-- "Enable Mesh / Image APIs" is off in the Creator Dashboard; the error names both. Each ready
+-- entry prints one "[EmbeddedMeshController] <id>: ready ..." line and the run ends with one
+-- summary line (ready / failed counts), so the Output window tells the whole story.
 --
 -- Attachment: CollectionService:GetTagged(TAG) + GetInstanceAddedSignal(TAG). A placeholder whose
--- part is ready and that has no child "EmbeddedMesh" gets a clone of the cached MeshPart:
+-- part is ready and that has no child "EmbeddedMesh" gets a copy of the cached MeshPart: a new
+-- MeshPart linked to the same EditableMesh / EditableImage through MeshPart:ApplyMesh(template)
+-- (the documented way to show one EditableMesh on several parts; template:Clone() is the fallback
+-- when ApplyMesh is unavailable, and a copy that lost its mesh content is reported once per entry);
 -- CFrame = placeholder.CFrame, parented under the placeholder, welded with a WeldConstraint
--- "MeshWeld" (Part0 = placeholder, Part1 = clone) or anchored when the placeholder is Anchored.
+-- "MeshWeld" (Part0 = placeholder, Part1 = copy) or anchored when the placeholder is Anchored.
 -- Untextured entries take the placeholder's MeshColor attribute as the clone's Color (Material
 -- SmoothPlastic) and follow GetAttributeChangedSignal("MeshColor"). A placeholder that streams out
 -- takes its child with it and is dressed again when it streams back in.
@@ -76,6 +86,10 @@ local decoderOverride: any = nil
 local decoders: any = nil
 local tagConnection = nil
 local colorWatched = setmetatable({}, { __mode = "k" })
+local attachWarned: { [string]: boolean } = {}
+-- Why CreateEditableMesh / CreateEditableImage hand back nil (appended to the stage error).
+local NIL_EDITABLE_HINT = " returned nil (the client's editable memory budget is exhausted, or this is a published"
+	.. " experience without \"Enable Mesh / Image APIs\" switched on in the Creator Dashboard)"
 
 -------------------------------------------------------------------------------
 -- Decoders (Shared modules, resolved lazily so a missing module only disables the feature)
@@ -163,6 +177,9 @@ function EmbeddedMeshController._reset()
 	for id in pairs(loading) do
 		loading[id] = nil
 	end
+	for id in pairs(attachWarned) do
+		attachWarned[id] = nil
+	end
 	EmbeddedMeshController.DecodeStats = {}
 end
 
@@ -238,6 +255,53 @@ local function watchColor(placeholder: Instance)
 	end
 end
 
+-- True when the Content references an object (an EditableMesh / EditableImage).
+local function hasObject(content: any): boolean
+	return typeof(content) == "Content" and content.Object ~= nil
+end
+
+-- Second MeshPart showing the template's mesh: Instance.new("MeshPart") + ApplyMesh(template) links
+-- it to the same EditableMesh / EditableImage (MeshContent, TextureContent, fidelities and MeshSize
+-- are copied); template:Clone() is the fallback when ApplyMesh is missing or throws. Errors when the
+-- copy ends up without the template's mesh content, so the caller reports it instead of attaching
+-- a plain grey block.
+local function instantiate(template: MeshPart): MeshPart
+	local copy: MeshPart? = nil
+	local ok, err = pcall(function()
+		local part = Instance.new("MeshPart")
+		part:ApplyMesh(template)
+		copy = part
+	end)
+	if not ok or not copy then
+		if copy then
+			(copy :: MeshPart):Destroy()
+		end
+		copy = template:Clone()
+	end
+	local part = copy :: MeshPart
+	if hasObject(template.MeshContent) and not hasObject(part.MeshContent) then
+		if ok then
+			-- ApplyMesh kept no object content; try the plain clone before giving up.
+			part:Destroy()
+			part = template:Clone()
+		end
+		if not hasObject(part.MeshContent) then
+			part:Destroy()
+			error("the attached copy lost the EditableMesh content" .. (if ok then " (ApplyMesh and Clone)" else " (Clone; ApplyMesh: " .. tostring(err) .. ")"), 0)
+		end
+	end
+	part.Name = template.Name
+	part.Size = template.Size
+	part.Color = template.Color
+	part.Material = template.Material
+	part.CastShadow = template.CastShadow
+	part.DoubleSided = template.DoubleSided
+	if hasObject(template.TextureContent) and not hasObject(part.TextureContent) then
+		part.TextureContent = template.TextureContent
+	end
+	return part
+end
+
 -- Attaches the cached mesh to one placeholder (no-op when not ready or already dressed).
 local function dress(placeholder: Instance)
 	if not placeholder:IsA("BasePart") then
@@ -261,7 +325,7 @@ local function dress(placeholder: Instance)
 		return
 	end
 	local ok, err = pcall(function()
-		local clone = template:Clone()
+		local clone = instantiate(template)
 		clone.Name = EmbeddedMeshController.MESH_NAME
 		clone.CFrame = placeholder.CFrame
 		clone.CanCollide = false
@@ -284,7 +348,12 @@ local function dress(placeholder: Instance)
 		clone.Parent = placeholder
 	end)
 	if not ok then
-		warn("[EmbeddedMeshController] " .. id .. "/" .. partName .. ": attach failed: " .. tostring(err))
+		if not attachWarned[id .. "/" .. partName] then
+			attachWarned[id .. "/" .. partName] = true
+			warn("[EmbeddedMeshController] " .. id .. "/" .. partName .. ": attach failed: " .. tostring(err))
+		end
+		markFailed(placeholder)
+		watchColor(placeholder)
 		return
 	end
 	if not textured[id] then
@@ -350,6 +419,9 @@ local function buildEditableMesh(geometry: any, yield: () -> ()): any
 	-- No FixedSize option: a fixed-size EditableMesh cannot have vertices or faces added, and the
 	-- part is produced through CreateMeshPartAsync(Content.fromObject(mesh)) which needs no such flag.
 	local editableMesh = AssetService:CreateEditableMesh()
+	if editableMesh == nil then
+		error("AssetService:CreateEditableMesh" .. NIL_EDITABLE_HINT, 0)
+	end
 	local positions, normals, uvs, triangles = geometry.positions, geometry.normals, geometry.uvs, geometry.triangles
 	local vertexCount = #positions
 	local vertexIds = table.create(vertexCount)
@@ -386,6 +458,9 @@ end
 local function buildEditableImage(image: any): any
 	local width, height = image.width, image.height
 	local editableImage = AssetService:CreateEditableImage({ Size = Vector2.new(width, height) })
+	if editableImage == nil then
+		error("AssetService:CreateEditableImage" .. NIL_EDITABLE_HINT, 0)
+	end
 	editableImage:WritePixelsBuffer(Vector2.zero, Vector2.new(width, height), image.rgba)
 	return editableImage
 end
@@ -405,12 +480,22 @@ local function partEntries(index: any): { any }
 	return out
 end
 
+-- Runs one named stage; its error is rethrown as "<stage>: <error>" so the warning names where the
+-- entry failed.
+local function stage(name: string, fn: () -> any): any
+	local ok, result = pcall(fn)
+	if not ok then
+		error(name .. ": " .. tostring(result), 0)
+	end
+	return result
+end
+
 local function loadEntry(entryId: string, decoderSet: any)
 	if ready[entryId] or failed[entryId] or loading[entryId] then
 		return
 	end
 	loading[entryId] = true
-	local stats = { geometrySeconds = 0, textureSeconds = 0, buildSeconds = 0, parts = 0 }
+	local stats = { geometrySeconds = 0, textureSeconds = 0, buildSeconds = 0, parts = 0, textureFailed = false }
 	EmbeddedMeshController.DecodeStats[entryId] = stats
 	local yield = makeYielder()
 	-- Every decoder reports progress through the same yielder, so base64 chunks, inflate blocks,
@@ -422,48 +507,84 @@ local function loadEntry(entryId: string, decoderSet: any)
 	}
 	local built: { [string]: MeshPart } = {}
 	local meshes = {}
+	local started = os.clock()
 	local ok, err = pcall(function()
-		local index = decoderSet.index(entryId)
+		local index = stage("index", function()
+			return decoderSet.index(entryId)
+		end)
 		if type(index) ~= "table" then
-			error("no index")
+			error("index: no index table for " .. entryId, 0)
 		end
-		local entries = partEntries(index)
+		local entries = stage("index", function()
+			return partEntries(index)
+		end)
 		local hasTexture = type(index.texture) == "table"
 
 		local editableImage = nil
 		if hasTexture then
-			local t0 = os.clock()
-			local textureBlob = decoderSet.loadTexture(entryId, progressOptions)
-			yield()
-			local image = decoderSet.decodePng(textureBlob, progressOptions)
-			stats.textureSeconds = os.clock() - t0
-			yield()
-			t0 = os.clock()
-			editableImage = buildEditableImage(image)
-			stats.buildSeconds += os.clock() - t0
-			yield()
+			-- A texture failure is not fatal: the parts are built untextured (plain grey) instead
+			-- of boxes, and the warning says why.
+			local okTexture, textureErr = pcall(function()
+				local t0 = os.clock()
+				local textureBlob = stage("loadTexture", function()
+					return decoderSet.loadTexture(entryId, progressOptions)
+				end)
+				yield()
+				local image = stage("decodePng", function()
+					return decoderSet.decodePng(textureBlob, progressOptions)
+				end)
+				stats.textureSeconds = os.clock() - t0
+				yield()
+				t0 = os.clock()
+				editableImage = stage("CreateEditableImage", function()
+					return buildEditableImage(image)
+				end)
+				stats.buildSeconds += os.clock() - t0
+				yield()
+			end)
+			if not okTexture then
+				editableImage = nil
+				stats.textureFailed = true
+				warn("[EmbeddedMeshController] " .. entryId .. ": texture failed, the mesh shows untextured: " .. tostring(textureErr))
+			end
 		end
 
 		for _, entry in ipairs(entries) do
+			local label = entryId .. "/" .. tostring(entry.name)
 			local t0 = os.clock()
-			local blob = decoderSet.loadPart(entryId, entry.name, progressOptions)
+			local blob = stage("loadPart " .. label, function()
+				return decoderSet.loadPart(entryId, entry.name, progressOptions)
+			end)
 			yield()
-			local geometry = decoderSet.decodeMesh(blob)
+			local geometry = stage("decodeMesh " .. label, function()
+				return decoderSet.decodeMesh(blob)
+			end)
 			stats.geometrySeconds += os.clock() - t0
 			yield()
 
 			t0 = os.clock()
-			local editableMesh = buildEditableMesh(geometry, yield)
-			local part = AssetService:CreateMeshPartAsync(Content.fromObject(editableMesh), {
-				CollisionFidelity = Enum.CollisionFidelity.Box,
-				RenderFidelity = Enum.RenderFidelity.Precise,
-			})
+			local editableMesh = stage("EditableMesh " .. label, function()
+				return buildEditableMesh(geometry, yield)
+			end)
+			local part = stage("CreateMeshPartAsync " .. label, function()
+				return AssetService:CreateMeshPartAsync(Content.fromObject(editableMesh), {
+					CollisionFidelity = Enum.CollisionFidelity.Box,
+					RenderFidelity = Enum.RenderFidelity.Precise,
+				})
+			end)
 			if typeof(part) ~= "Instance" or not part:IsA("MeshPart") then
-				error("CreateMeshPartAsync returned no MeshPart")
+				error("CreateMeshPartAsync " .. label .. ": returned no MeshPart", 0)
 			end
 			if editableImage then
-				part.TextureContent = Content.fromObject(editableImage)
-			else
+				local okTexture, textureErr = pcall(function()
+					part.TextureContent = Content.fromObject(editableImage)
+				end)
+				if not okTexture then
+					stats.textureFailed = true
+					warn("[EmbeddedMeshController] " .. label .. ": TextureContent failed, the mesh shows untextured: " .. tostring(textureErr))
+				end
+			end
+			if not editableImage or stats.textureFailed then
 				part.Color = Color3.fromRGB(163, 162, 165)
 				part.Material = Enum.Material.SmoothPlastic
 			end
@@ -483,11 +604,12 @@ local function loadEntry(entryId: string, decoderSet: any)
 			yield()
 		end
 		holders[entryId] = { meshes = meshes, image = editableImage }
-		textured[entryId] = hasTexture
+		textured[entryId] = hasTexture and not stats.textureFailed
 		cache[entryId] = built
 		ready[entryId] = true
 	end)
 	loading[entryId] = nil
+	stats.totalSeconds = os.clock() - started
 	if not ok then
 		for _, part in pairs(built) do
 			pcall(function()
@@ -504,6 +626,14 @@ local function loadEntry(entryId: string, decoderSet: any)
 		end
 		return
 	end
+	print(string.format(
+		"[EmbeddedMeshController] %s: ready (%d part%s, %s, %.1fs)",
+		entryId,
+		stats.parts,
+		if stats.parts == 1 then "" else "s",
+		if not holders[entryId].image then "untextured" elseif stats.textureFailed then "texture failed" else "textured",
+		stats.totalSeconds
+	))
 	EmbeddedMeshController.Loaded:Fire(entryId)
 	dressAll(entryId)
 end
@@ -629,8 +759,23 @@ function EmbeddedMeshController.Start()
 	-- YIELD_BUDGET of work, and running them concurrently would stack several budgets into one frame.
 	local ids = orderIds(EmbeddedMeshController.ListEntries())
 	task.spawn(function()
+		local t0 = os.clock()
 		for _, entryId in ipairs(ids) do
 			loadEntry(entryId, set)
+		end
+		local readyCount, failedIds = 0, {}
+		for _, entryId in ipairs(ids) do
+			if ready[entryId] then
+				readyCount += 1
+			elseif failed[entryId] then
+				table.insert(failedIds, entryId)
+			end
+		end
+		local summary = string.format("[EmbeddedMeshController] decode finished: %d of %d entries ready in %.1fs", readyCount, #ids, os.clock() - t0)
+		if #failedIds > 0 then
+			warn(summary .. "; failed: " .. table.concat(failedIds, ", ") .. " (see the warnings above for the stage and error)")
+		elseif #ids > 0 then
+			print(summary)
 		end
 	end)
 end

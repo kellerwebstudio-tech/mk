@@ -11,12 +11,17 @@ and `<VehicleId>_Texture.png` into Luau data modules under `src/shared/MeshData/
   `MeshBody` of the mesh's size and offset (tag `EmbeddedMeshBody`, attributes `VehicleId`, `EmbeddedMesh`,
   `EmbeddedPart = "Body"`). Nothing is loaded from
   Roblox; `VehicleService` publishes the same placeholder in the shop display copies.
-- **Client** (`EmbeddedMeshController`): after joining, one background task per vehicle decodes the texture
-  (`Base64` → `Inflate` → `PngDecoder`) and the geometry (`MeshPack`, "DDCM" v1), creates an `EditableImage` and an
-  `EditableMesh`, turns them into one `MeshPart` with `AssetService:CreateMeshPartAsync(Content.fromObject(...))` and
-  attaches a clone to every placeholder (welded on a live vehicle, anchored on a display). The vehicles are decoded one
-  after another and every stage yields regularly, so the frame rate stays smooth; expect roughly 1–3 s per vehicle after join and about 12 MB of texture memory per client
-  (three 1024 × 1024 RGBA images). A decode failure warns once and leaves that vehicle as a semi-transparent grey box.
+- **Client** (`EmbeddedMeshController`): after joining, one background task decodes the entries one after another: the
+  texture (`Base64` → `Inflate` → `PngDecoder`) and the geometry (`MeshPack`, "DDCM" v1), creates an `EditableImage`
+  and an `EditableMesh`, turns them into one template `MeshPart` with
+  `AssetService:CreateMeshPartAsync(Content.fromObject(...))` and attaches a copy to every placeholder (welded on a live
+  vehicle or rig, anchored on a display). A copy is a new `MeshPart` linked to the same `EditableMesh` / `EditableImage`
+  with `MeshPart:ApplyMesh(template)` (the documented way to show one editable mesh on several parts); `Clone()` is the
+  fallback, and a copy that lost its mesh content is reported instead of being shown as a plain grey block. Every stage
+  yields regularly, so the frame rate stays smooth; expect roughly 1–3 s per vehicle and under a second per person after
+  join, and about 21 MB of texture memory per client (three 1024 × 1024 and nine 512 × 512 RGBA images). A decode
+  failure warns once and leaves that entry as a semi-transparent grey box; a texture-only failure keeps the mesh and shows
+  it untextured. See "Runtime requirements and diagnostics" below.
 
 Regenerate the data after changing a mesh or texture (requires Python 3 with numpy and Pillow):
 
@@ -63,6 +68,40 @@ centre). `ShopService.ApplyUniform` welds an invisible placeholder `CourierVest`
 `MeshColor` = the equipped uniform's vest colour; the client attaches the mesh clone and keeps its `Color` in sync
 with that attribute (`Material` SmoothPlastic), so changing uniforms only rewrites the attribute. Without the data the
 generated vest + trim parts are used.
+
+## Runtime requirements and diagnostics
+
+The embedded mode relies on the engine's in-experience mesh and image APIs (`EditableMesh`, `EditableImage`,
+`AssetService:CreateMeshPartAsync`, `MeshPart.TextureContent`, `MeshPart:ApplyMesh`). Two engine rules decide whether
+they run (from the Roblox engine reference for `EditableMesh` / `EditableImage`, `AssetService.CreateEditableMesh`):
+
+- **Published experiences need a switch.** "For security purposes, using `EditableMesh` fails by default for published
+  games": the experience owner must be 13+ age verified and ID verified, then toggle **Enable Mesh / Image APIs** on the
+  experience in the Creator Dashboard (Creations → the experience → Configure). Until then every entry fails on the
+  live client (vehicles, people and the vest all stay as grey boxes) while the same place works in Studio. Studio, the
+  server and plugins are not restricted.
+- **Clients have an editable memory budget.** `CreateEditableMesh` / `CreateEditableImage` "return `nil` if the
+  device-specific editable memory budget is exhausted" (Studio and the server have no budget). The game keeps 12
+  editable meshes (about 30 k vertices in total) and 12 editable images (about 21 MB RGBA) per client; the budget size is
+  not published, so low-memory devices may lose the last entries in the decode order. `python3 tools/mesh_embed.py 512`
+  halves the texture memory if that happens.
+
+Every run writes its story to the Output window (Studio: View → Output), prefixed `[EmbeddedMeshController]`:
+
+| Line | Meaning |
+|---|---|
+| `<Id>: ready (3 parts, textured, 0.8s)` | the entry decoded; placeholders are dressed as soon as they exist |
+| `<Id>: texture failed, the mesh shows untextured: <stage>: <error>` | the mesh is used without its texture (plain grey) |
+| `<Id>: embedded mesh failed, showing placeholder box: <stage> <Id>/<Part>: <error>` | the entry's placeholders become semi-transparent grey boxes |
+| `<Id>/<Part>: attach failed: <error>` | a ready mesh could not be attached to one placeholder (reported once per entry/part) |
+| `decode finished: N of M entries ready in T s[; failed: ...]` | the summary (a warning when anything failed) |
+| `embedded mesh modules unavailable ...` | `Shared.MeshData` / `Util.PngDecoder` did not load; everything stays boxed |
+
+The stages are `index`, `loadTexture`, `decodePng`, `CreateEditableImage`, `loadPart`, `decodeMesh`, `EditableMesh`
+(building it), `CreateMeshPartAsync` and `TextureContent`. "`AssetService:CreateEditableMesh returned nil`" means the
+memory budget or the published-experience switch above. When reporting grey boxes, copy these lines: they say which
+entry failed at which stage. The offline specs cover every stage's failure path, the `ApplyMesh` / `Clone` attach
+fallbacks and the nil returns, but the authors have not run the decode in Roblox itself.
 
 ## Regenerating the embedded data
 
@@ -113,6 +152,9 @@ If the Studio importer created the texture as a **SurfaceAppearance** child inst
 
 ## Checking in Studio
 
+- Press Play and watch the Output window for the `[EmbeddedMeshController]` lines above: the vest and bicycle come
+  first, people follow one by one, and the summary line closes the run. Grey boxes mean a failed entry (semi-transparent)
+  or an attach that lost the mesh (reported); plain grey people mean the texture stage failed.
 - The bike's saddle should sit at the rider's hips and the wheels on the road; if the model floats or sinks, adjust `mesh.body.offset` (y) in `VehicleDefinitions`.
 - If a vehicle faces backwards, the conversion rotation is wrong for that file: re-run `python3 tools/mesh_convert.py <obj> <VehicleId> <length> <rideHeight> assets/meshes/<VehicleId> 0 180`.
 - Paint cosmetics (bike colours, van paint, decals) do not recolour textured meshes; they still apply to the built-in vehicles.

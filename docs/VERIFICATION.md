@@ -13,7 +13,7 @@
 | City layout | `python3 tools/validate_layout.py` | 0 problems; bicycle/scooter/van graphs each one component; tutorial distances 123 / 74 studs |
 | Map render | `python3 tools/render_map.py` → `docs/map.png` | inspected |
 
-Spec files: `harness` (67) and `harness_extra` (14) prove the mock; `builders` (23), `server_bootstrap` (1), `server_core` (65), `contract_depot` (21), `client` (61), `client_verify` (12), `ui` (31) cover the game — 295 specs in total.
+Spec files: `harness` (67) and `harness_extra` (14) prove the mock; `builders` (23), `server_bootstrap` (1), `server_core` (65), `contract_depot` (21), `client` (61), `client_verify` (12), `ui` (31) cover the game — 295 specs at the first release. Later work added `devtools`, `meshes`, `embedded_meshes`, `codecs`, `figures` and `figure_data` (the dev panel, the mesh pipeline, the embedded decoders and figure rigs): 443 specs as of 2026-10-08, all passing.
 
 ## Testing requirements → status
 
