@@ -1,4 +1,4 @@
-# Custom vehicle meshes
+# Custom meshes (vehicles, people, courier vest)
 
 ## Embedded mode (no upload) — the active mode
 
@@ -8,7 +8,8 @@ and `<VehicleId>_Texture.png` into Luau data modules under `src/shared/MeshData/
 
 - **Server** (`VehicleBuilder`): with `MeshAssets.Vehicles[id].embedded = true` (the default for Bicycle, Scooter and
   Van) and a data module present (`MeshAssets.isEmbedded(id)`), the vehicle body is an invisible placeholder `Part`
-  `MeshBody` of the mesh's size and offset (tag `EmbeddedMeshBody`, attribute `VehicleId`). Nothing is loaded from
+  `MeshBody` of the mesh's size and offset (tag `EmbeddedMeshBody`, attributes `VehicleId`, `EmbeddedMesh`,
+  `EmbeddedPart = "Body"`). Nothing is loaded from
   Roblox; `VehicleService` publishes the same placeholder in the shop display copies.
 - **Client** (`EmbeddedMeshController`): after joining, one background task per vehicle decodes the texture
   (`Base64` → `Inflate` → `PngDecoder`) and the geometry (`MeshPack`, "DDCM" v1), creates an `EditableImage` and an
@@ -27,6 +28,53 @@ python3 tools/mesh_embed.py 512      # smaller textures: faster decode, a quarte
 The script rewrites `src/shared/MeshData/<VehicleId>/*.luau` and `src/shared/MeshData/report.json`; then sync with Rojo
 as usual. Uploading the meshes is optional: to use uploaded ids instead (one `MeshPart` created by the server, no client
 decode), import them as described below and set `embedded = false` for that vehicle in `Shared/Config/MeshAssets.luau`.
+
+## People (NPC figures) — embedded
+
+The eight Meshy people (`NPCCustomerA/B`, `NPCStaff`, `NPCWorker`, `NPCDriver`, `NPCPedestrianA/B/C`) are embedded the
+same way (`src/shared/MeshData/<Id>/`, kind `figure`, 512 px texture). `tools/mesh_embed.py` converts each source OBJ
+into game coordinates (-Z forward, origin between the feet on the ground, 5.2 studs tall), **splits it into three parts
+at the hip line** (`Body`, `LegL`, `LegR`; everything below `HIP_FRACTION` of the height, left/right of x = 0) and
+stores every part's bounding box plus, for the legs, the hip `pivot`. A leg blob is written relative to its pivot so
+the MeshPart the client builds is centred on its own bounds.
+
+At runtime a person is a **placeholder rig** (`Shared/Util/FigureRig.build`): an invisible `Root` 3 studs above the
+feet, an invisible `Body` placeholder welded to it and two leg placeholders on `Motor6D`s named `LeftHip` / `RightHip`
+whose `C0`/`C1` put the joint on the hip point (`C0 = pivot - rootCentre`, `C1 = pivot - bboxCentre`). The client
+`EmbeddedMeshController` decodes the three parts (one shared `EditableImage`), welds a clone to every placeholder and
+the legs swing by writing `Motor6D.Transform = CFrame.Angles(sin(phase) * 0.55, 0, 0)` (`FigureRig.setWalkPose`; the
+right leg gets the opposite angle, `setIdlePose` resets both). Who uses which figure (`FigureRig.idForKind`):
+
+| NPC kind | Figure | Where |
+|---|---|---|
+| Staff | `NPCStaff` | business counters (server, frozen) |
+| Driver | `NPCDriver` | hired depot drivers (server, frozen) |
+| Worker | `NPCWorker` | depot yards (client, idle) |
+| Customer | `NPCCustomerA` / `B` (seed % 2) | idle near destinations and in the doorway after a delivery (client) |
+| Pedestrian | `NPCPedestrianA` / `B` / `C` (seed % 3) | walking the pedestrian loops (client) |
+
+Without the data modules (or with a decode failure) the game falls back to the generated part figures, or shows the
+placeholders as semi-transparent grey boxes.
+
+## Courier vest — embedded, tinted at runtime
+
+`CourierVest` (kind `accessory`, no texture) is fitted to an R15 `UpperTorso` (2.3 × 1.9 × 1.3 studs, origin at the vest
+centre). `ShopService.ApplyUniform` welds an invisible placeholder `CourierVest` to the torso with the attribute
+`MeshColor` = the equipped uniform's vest colour; the client attaches the mesh clone and keeps its `Color` in sync
+with that attribute (`Material` SmoothPlastic), so changing uniforms only rewrites the attribute. Without the data the
+generated vest + trim parts are used.
+
+## Regenerating the embedded data
+
+```
+python3 -I tools/mesh_embed.py                     # every entry of MANIFEST (vehicles, people, vest)
+python3 -I tools/mesh_embed.py NPCStaff CourierVest  # only those ids
+```
+
+New Meshy exports go through the same tool: drop the OBJ/texture into the `source` folder the `MANIFEST` entry names
+(the first run keeps a converted copy under `assets/meshes/<Id>/<Id>_Source.obj`), then re-run it and
+`python3 -I tools/make_codec_fixtures.py` (the codec specs checksum the real data modules). Figures must face +Z in the
+export (the tool rotates them 180 degrees) and stand on their feet; the hip split is automatic.
 
 ## Import guide (optional: uploaded ids)
 

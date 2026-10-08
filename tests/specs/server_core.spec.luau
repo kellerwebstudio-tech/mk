@@ -1504,10 +1504,19 @@ describe("ShopService", function()
 		expect(Shop.PurchaseCosmetic(player, "Uniform_Blue").ok).toBe(true)
 		local vest = player.Character:FindFirstChild("CourierVest")
 		expect(vest).toBeTruthy()
-		expect(vest.Color).toEqual(Color3.fromRGB(50, 110, 200))
-		expect(vest:FindFirstChild("VestTrim")).toBeTruthy()
 		expect(vest.Massless).toBe(true)
 		expect(vest.CanCollide).toBe(false)
+		if Shop.HasEmbeddedVest() then
+			-- Embedded vest (Shared.MeshData.CourierVest): an invisible placeholder tinted through
+			-- MeshColor that the client dresses (details in figures.spec.luau).
+			expect(vest:GetAttribute("EmbeddedMesh")).toBe("CourierVest")
+			expect(vest:GetAttribute("MeshColor")).toEqual(Color3.fromRGB(50, 110, 200))
+			expect(vest.Transparency).toBe(1)
+			expect(vest:FindFirstChild("VestTrim")).toBeNil()
+		else
+			expect(vest.Color).toEqual(Color3.fromRGB(50, 110, 200))
+			expect(vest:FindFirstChild("VestTrim")).toBeTruthy()
+		end
 	end)
 end)
 

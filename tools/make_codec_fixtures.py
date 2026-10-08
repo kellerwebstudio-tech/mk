@@ -7,9 +7,10 @@ Requires numpy + PIL (same as tools/mesh_embed.py, which is imported for the DDC
 
 Every vector is a base64 string plus the values the spec recomputes in Luau (lengths, Adler-32 of
 the expected output, exact bytes for the small cases). The `embedded` section is derived from the
-REAL data modules under src/shared/MeshData/<Vehicle>/ (checksums of the texture's inflated PNG
-stream, of its RGBA pixels as PIL decodes them, and of the geometry blob) so the end-to-end specs
-can verify the production data without shipping a second copy of it.
+REAL data modules under src/shared/MeshData/<Id>/ (checksums of the texture's inflated PNG
+stream, of its RGBA pixels as PIL decodes them, and of every part's geometry blob) so the end-to-end
+specs can verify the production data without shipping a second copy of it. The index files
+(src/shared/MeshData/<Id>/init.luau, index version 2) are parsed with a tiny Luau table reader.
 """
 import base64
 import io
@@ -348,7 +349,8 @@ def ddcm_vector():
         path = os.path.join(d, "cube.obj")
         with open(path, "w") as w:
             w.write(CUBE_OBJ)
-        blob, meta = mesh_embed.pack_geometry(path)
+        V, VT, VN, F = mesh_embed.load_obj(path)
+        blob, meta = mesh_embed.pack_geometry(V, VT, VN, F)
     # parse the blob back with struct (the same interpretation MeshPack must use)
     assert blob[:4] == b"DDCM"
     version, flags, vc, tc = struct.unpack_from("<HHII", blob, 4)
@@ -382,20 +384,86 @@ def ddcm_vector():
 
 
 # ----------------------------------------------------------------------------------------------
-# checksums of the real embedded data (src/shared/MeshData/<Vehicle>/)
+# checksums of the real embedded data (src/shared/MeshData/<Id>/, index version 2)
 # ----------------------------------------------------------------------------------------------
-def read_chunks(vdir, prefix):
-    parts = []
-    i = 1
-    while True:
-        p = os.path.join(vdir, f"{prefix}{i}.luau")
-        if not os.path.exists(p):
-            break
-        text = open(p).read()
-        m = re.search(r'return "([A-Za-z0-9+/=]*)"', text)
-        parts.append(m.group(1))
-        i += 1
-    return base64.b64decode("".join(parts)), i - 1
+class _LuauTable:
+    """Reads the table literal returned by a generated index module: `{ key = value, ... }` with
+    string / number / nil / boolean / nested table values (keyed tables become dicts, lists stay
+    lists). Just enough for tools/mesh_embed.py's output; not a general Luau parser."""
+
+    def __init__(self, text: str):
+        self.text = text
+        self.pos = 0
+
+    def skip(self):
+        while True:
+            m = re.compile(r"\s+|--[^\n]*").match(self.text, self.pos)
+            if not m or m.end() == self.pos:
+                return
+            self.pos = m.end()
+
+    def value(self):
+        self.skip()
+        t = self.text
+        if t.startswith("{", self.pos):
+            return self.table()
+        if t.startswith('"', self.pos):
+            m = re.compile(r'"((?:[^"\\]|\\.)*)"').match(t, self.pos)
+            self.pos = m.end()
+            return m.group(1)
+        for word, val in (("nil", None), ("true", True), ("false", False)):
+            if re.compile(word + r"\b").match(t, self.pos):
+                self.pos += len(word)
+                return val
+        m = re.compile(r"-?\d+(\.\d+)?([eE][-+]?\d+)?").match(t, self.pos)
+        if not m:
+            raise ValueError("bad Luau value at %d: %r" % (self.pos, t[self.pos : self.pos + 30]))
+        self.pos = m.end()
+        return float(m.group(0)) if (m.group(1) or m.group(2)) else int(m.group(0))
+
+    def table(self):
+        assert self.text[self.pos] == "{"
+        self.pos += 1
+        items, keyed = [], {}
+        while True:
+            self.skip()
+            if self.text.startswith("}", self.pos):
+                self.pos += 1
+                break
+            m = re.compile(r"([A-Za-z_]\w*)\s*=(?!=)").match(self.text, self.pos)
+            if m:
+                self.pos = m.end()
+                keyed[m.group(1)] = self.value()
+            else:
+                items.append(self.value())
+            self.skip()
+            if self.text.startswith(",", self.pos) or self.text.startswith(";", self.pos):
+                self.pos += 1
+        if keyed and items:
+            raise ValueError("mixed table at %d" % self.pos)
+        return keyed if keyed else items
+
+
+def read_index(path: str) -> dict:
+    text = open(path, encoding="utf-8").read()
+    m = re.search(r"^return\s*", text, re.M)
+    if not m:
+        raise ValueError(f"{path}: no `return` statement")
+    index = _LuauTable(text[m.end() :]).value()
+    if not isinstance(index, dict) or index.get("version") != 2:
+        raise ValueError(f"{path}: not a version-2 MeshData index")
+    return index
+
+
+def read_chunk(path: str) -> str:
+    m = re.search(r'return "([A-Za-z0-9+/=]*)"', open(path, encoding="utf-8").read())
+    if not m:
+        raise ValueError(f"{path}: no base64 string")
+    return m.group(1)
+
+
+def read_named_chunks(vdir: str, names) -> bytes:
+    return base64.b64decode("".join(read_chunk(os.path.join(vdir, f"{n}.luau")) for n in names))
 
 
 def png_idat(png: bytes) -> bytes:
@@ -413,30 +481,70 @@ def png_idat(png: bytes) -> bytes:
 def embedded_vectors():
     out = {}
     base = os.path.join(ROOT, "src", "shared", "MeshData")
-    for vid in sorted(os.listdir(base)):
-        vdir = os.path.join(base, vid)
-        if not os.path.isdir(vdir) or not os.path.exists(os.path.join(vdir, "G1.luau")):
+    for eid in sorted(os.listdir(base)):
+        vdir = os.path.join(base, eid)
+        index_path = os.path.join(vdir, "init.luau")
+        if not os.path.isdir(vdir) or not os.path.exists(index_path):
             continue
-        geo, gchunks = read_chunks(vdir, "G")
-        tex, tchunks = read_chunks(vdir, "T")
-        im = Image.open(io.BytesIO(tex))
-        raw = zlib.decompress(png_idat(tex))
-        rgba = to_rgba(im)
-        vc, tc = struct.unpack_from("<II", geo, 8)
-        out[vid] = {
-            "geometryBytes": len(geo),
-            "geometryChunks": gchunks,
-            "geometryAdler": adler(geo),
-            "vertexCount": vc,
-            "triangleCount": tc,
-            "textureBytes": len(tex),
-            "textureChunks": tchunks,
-            "textureAdler": adler(tex),
-            "width": im.size[0],
-            "height": im.size[1],
-            "idatAdler": adler(raw),  # the Adler-32 the zlib trailer carries
-            "rgbaAdler": adler(rgba),  # Adler-32 of the RGBA8 pixels (as PIL decodes them)
+        index = read_index(index_path)
+        assert index["id"] == eid, (eid, index["id"])
+        entry = {
+            "kind": index["kind"],
+            "textured": index.get("texture") is not None,
+            "bboxMin": index["bboxMin"],
+            "bboxMax": index["bboxMax"],
         }
+        tex_index = index.get("texture")
+        if tex_index is not None:
+            tex = read_named_chunks(vdir, [f"T{i}" for i in range(1, tex_index["chunks"] + 1)])
+            assert len(tex) == tex_index["bytes"], (eid, len(tex), tex_index["bytes"])
+            im = Image.open(io.BytesIO(tex))
+            assert im.size == (tex_index["width"], tex_index["height"]), (eid, im.size)
+            raw = zlib.decompress(png_idat(tex))
+            rgba = to_rgba(im)
+            entry.update(
+                {
+                    "textureBytes": len(tex),
+                    "textureChunks": tex_index["chunks"],
+                    "textureAdler": adler(tex),
+                    "width": im.size[0],
+                    "height": im.size[1],
+                    "idatAdler": adler(raw),  # the Adler-32 the zlib trailer carries
+                    "rgbaAdler": adler(rgba),  # Adler-32 of the RGBA8 pixels (as PIL decodes them)
+                }
+            )
+        parts = []
+        for part in index["parts"]:
+            blob = read_named_chunks(vdir, part["chunks"])
+            assert len(blob) == part["bytes"], (eid, part["name"], len(blob), part["bytes"])
+            assert blob[:4] == b"DDCM", (eid, part["name"])
+            version, flags, vc, tc = struct.unpack_from("<HHII", blob, 4)
+            assert version == 1 and vc == part["vertexCount"] and tc == part["triangleCount"], (eid, part["name"])
+            bmin = struct.unpack_from("<3f", blob, 16)
+            bmax = struct.unpack_from("<3f", blob, 28)
+            pivot = part.get("pivot")
+            # the index bbox is in entry coordinates; the blob's own bbox is relative to the pivot
+            for k in range(3):
+                shift = pivot[k] if pivot else 0.0
+                assert abs(bmin[k] + shift - part["bboxMin"][k]) < 2e-3, (eid, part["name"], "bboxMin", k)
+                assert abs(bmax[k] + shift - part["bboxMax"][k]) < 2e-3, (eid, part["name"], "bboxMax", k)
+            p = {
+                "name": part["name"],
+                "bytes": len(blob),
+                "chunks": len(part["chunks"]),
+                "adler": adler(blob),
+                "vertexCount": vc,
+                "triangleCount": tc,
+                "bboxMin": part["bboxMin"],
+                "bboxMax": part["bboxMax"],
+                "blobBboxMin": [float(x) for x in bmin],  # as stored in the DDCM header
+                "blobBboxMax": [float(x) for x in bmax],
+            }
+            if pivot is not None:
+                p["pivot"] = pivot
+            parts.append(p)
+        entry["parts"] = parts
+        out[eid] = entry
     return out
 
 

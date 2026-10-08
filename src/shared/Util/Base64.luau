@@ -1,4 +1,5 @@
 --!strict
+--!native
 -- Base64 (RFC 4648, standard alphabet, "=" padding) between Luau strings and buffers.
 -- decode ignores ASCII whitespace anywhere in the input and errors on any other foreign character,
 -- on a misplaced "=" and on a dangling single character. encode never inserts line breaks.

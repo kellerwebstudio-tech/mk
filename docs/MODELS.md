@@ -15,15 +15,17 @@ Everything in the game is currently generated from parts by the builders. This i
 | Naming | Model names exactly as listed; part names inside vehicles/packages exactly as listed because scripts find them by name. |
 | Delivery format | FBX (or OBJ) per model, imported with Studio's 3D Importer into the `ServerStorage` folder named per section. |
 
-## 1. Vehicles (`ServerStorage/VehicleTemplates`)
+## 1. Vehicles (`ServerStorage/VehicleTemplates`) — embedded (Meshy)
+
+The three vehicle bodies are embedded Meshy meshes (docs/MESHES.md): no template needs importing.
 
 Visual-only meshes; the game adds the chassis, seat, constraints and cargo slots. Sizes are overall footprints.
 
 | Model | Size (w × h × l, studs) | Parts the scripts need | Notes |
 |---|---|---|---|
-| `Bicycle` | 1.4 × 3.2 × 5.6 | `Body` (frame, fork, handlebar, saddle, basket, rear rack), `FrontWheel`, `RearWheel` (radius 1.1, width 0.3), optional `Crank`, `PedalLeft`, `PedalRight` | Frame = `Primary`, basket/fork = `Accent`. Saddle top at y 1.55 (seat), rear rack top at y 1.35 behind the saddle (package slot). |
-| `Scooter` | 2.0 × 3.3 × 6.0 | `Body`, `FrontWheel`, `RearWheel` (radius 0.9, width 0.5), `TopBox`, `Headlight`, `Taillight` | Body = `Primary`, top box/fender = `Accent`. Saddle at y 1.45; top box lid at y 2.3 (package slot). |
-| `Van` | 6.0 × 7.9 × 13.5 | `Body` (cargo box, cab, hood, bumpers, mirrors, roof rack), `FrontWheelL/R`, `RearWheelL/R` (radius 1.3, width 0.9), `Windshield`, `SideWindowL/R`, `HeadlightL/R`, `TaillightL/R`, `DecalL/R`, `StripeL/R` | Body = `Primary`, stripes = `Accent`, side panels = `Decal`. Driver seat at (-1.5, 0.4, -4.3) from the origin; rear cargo area open behind the cab for visible packages. |
+| `Bicycle` — **embedded (Meshy)** | 1.4 × 3.2 × 5.6 | `Body` (frame, fork, handlebar, saddle, basket, rear rack), `FrontWheel`, `RearWheel` (radius 1.1, width 0.3), optional `Crank`, `PedalLeft`, `PedalRight` | Frame = `Primary`, basket/fork = `Accent`. Saddle top at y 1.55 (seat), rear rack top at y 1.35 behind the saddle (package slot). |
+| `Scooter` — **embedded (Meshy)** | 2.0 × 3.3 × 6.0 | `Body`, `FrontWheel`, `RearWheel` (radius 0.9, width 0.5), `TopBox`, `Headlight`, `Taillight` | Body = `Primary`, top box/fender = `Accent`. Saddle at y 1.45; top box lid at y 2.3 (package slot). |
+| `Van` — **embedded (Meshy)** | 6.0 × 7.9 × 13.5 | `Body` (cargo box, cab, hood, bumpers, mirrors, roof rack), `FrontWheelL/R`, `RearWheelL/R` (radius 1.3, width 0.9), `Windshield`, `SideWindowL/R`, `HeadlightL/R`, `TaillightL/R`, `DecalL/R`, `StripeL/R` | Body = `Primary`, stripes = `Accent`, side panels = `Decal`. Driver seat at (-1.5, 0.4, -4.3) from the origin; rear cargo area open behind the cab for visible packages. |
 | `VanDisplay` | same as Van | — | Optional: parked/depot version without openable rear (can be the Van mesh). |
 
 Wheel meshes must have their axle along local X and be centred on the axle.
@@ -42,16 +44,16 @@ Origin at the bottom centre; a flat top so they stack.
 
 ## 3. NPCs (`ServerStorage/NPCTemplates`)
 
-Simple stylised figures, 5 studs tall, root at the feet, limbs as separate meshes named `Head`, `Torso`, `LeftArm`, `RightArm`, `LeftLeg`, `RightLeg` so the walk pose can swing them (or a proper R15 rig if you prefer animation).
+All NPC figures and the vest are **embedded (Meshy)**: packed by `tools/mesh_embed.py` into `src/shared/MeshData/<Id>/` and rebuilt on the client (docs/MESHES.md "People"). A figure is 5.2 studs tall, origin between the feet, split into `Body`, `LegL`, `LegR` at the hip so the legs swing on Motor6Ds; no upload or `NPCTemplates` content is needed. (A hand-made replacement would need the same three parts, or `Head`/`Torso`/limb meshes for the generated-figure path.)
 
 | Model | Outfit |
 |---|---|
-| `Pedestrian` (3 colour variants) | casual clothes |
-| `Customer` (2 variants) | casual, holds nothing |
-| `Staff` | cap + apron (apron colour = business accent) |
-| `Worker` | hi-vis vest + hard hat |
-| `Driver` | courier cap + vest |
-| `CourierVest` (accessory) | 1 vest mesh welded to the player's torso; colour = `Primary` (uniform cosmetic) |
+| `Pedestrian` (3 variants) — **embedded (Meshy)** `NPCPedestrianA/B/C` | casual clothes |
+| `Customer` (2 variants) — **embedded (Meshy)** `NPCCustomerA/B` | casual, holds nothing |
+| `Staff` — **embedded (Meshy)** `NPCStaff` | cap + apron |
+| `Worker` — **embedded (Meshy)** `NPCWorker` | hi-vis vest + hard hat |
+| `Driver` — **embedded (Meshy)** `NPCDriver` | courier cap + vest |
+| `CourierVest` (accessory) — **embedded (Meshy)** | 1 untextured vest mesh welded to the player's torso; tinted with the uniform cosmetic's vest colour (`MeshColor`) |
 
 ## 4. Buildings (`ServerStorage/CityTemplates/Buildings`)
 

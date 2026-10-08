@@ -368,6 +368,8 @@ local function makePlaceholderBody(vehicleId: string, def: VehicleDefinitions.Ve
 	part.TopSurface = Enum.SurfaceType.Smooth
 	part.BottomSurface = Enum.SurfaceType.Smooth
 	part:SetAttribute("VehicleId", vehicleId)
+	part:SetAttribute("EmbeddedMesh", vehicleId)
+	part:SetAttribute("EmbeddedPart", "Body")
 	CollectionService:AddTag(part, VehicleBuilder.EMBEDDED_TAG)
 	return part
 end

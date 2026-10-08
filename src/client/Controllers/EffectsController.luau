@@ -1,8 +1,9 @@
 --!nonstrict
 -- EffectsController: subtle client-side effects. Door reaction (door swings open 90 degrees
--- around its hinge edge, speech bubble, small confetti burst), pickup reaction (speech bubble over
--- the counter / staff), a floating "+$X" payment popup and a short screen flash on a new record.
--- No speed lines, no camera shake.
+-- around its hinge edge, speech bubble, small confetti burst and, with embedded people data, a
+-- customer figure standing in the doorway for DOOR_CUSTOMER_TIME seconds), pickup reaction (speech
+-- bubble over the counter / staff), a floating "+$X" payment popup and a short screen flash on a
+-- new record. No speed lines, no camera shake.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
@@ -13,6 +14,7 @@ local Debris = game:GetService("Debris")
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Util = Shared:WaitForChild("Util")
 local MathUtil = require(Util:WaitForChild("MathUtil"))
+local FigureRig = require(Util:WaitForChild("FigureRig"))
 
 local EffectsController = {}
 
@@ -22,11 +24,15 @@ EffectsController.BUBBLE_TIME = 3
 EffectsController.CONFETTI_COUNT = 20
 EffectsController.POPUP_TIME = 1.6
 EffectsController.FLASH_TIME = 0.9
+EffectsController.DOOR_CUSTOMER_TIME = 3.5
+EffectsController.DOOR_CUSTOMER_OFFSET = 1.2
+EffectsController.DOOR_CUSTOMER_NAME = "DoorCustomer"
 
 local ctx = nil
 local fxFolder: Instance? = nil
 local screenGui: Instance? = nil
 local openDoors: { [Instance]: boolean } = {}
+local doorCustomers: { [string]: Model } = {}
 
 local function getOrCreateFolder(parent: Instance, name: string): Instance
 	local existing = parent:FindFirstChild(name)
@@ -215,6 +221,83 @@ local function findDoor(model: Instance): BasePart?
 end
 
 -------------------------------------------------------------------------------
+-- Door customer (embedded people figure)
+-------------------------------------------------------------------------------
+
+local function hashString(text: string): number
+	local h = 0
+	for i = 1, #text do
+		h = (h * 31 + string.byte(text, i)) % 1000003
+	end
+	return h
+end
+
+-- The destination's facing (out of the building): the layout's facing, else the Door part's
+-- LookVector, else -Z.
+local function destinationFacing(destinationId: string, door: BasePart?): Vector3
+	local layout = ctx and (ctx.layout or (ctx.state and type(ctx.state.getLayout) == "function" and ctx.state.getLayout()))
+	local destinations = layout and layout.destinations
+	if type(destinations) == "table" then
+		for _, destination in ipairs(destinations) do
+			if type(destination) == "table" and destination.id == destinationId then
+				local facing = destination.facing
+				if type(facing) == "table" and type(facing.x) == "number" and type(facing.z) == "number" then
+					local flat = Vector3.new(facing.x, 0, facing.z)
+					if flat.Magnitude > 1e-4 then
+						return flat.Unit
+					end
+				end
+				break
+			end
+		end
+	end
+	if door then
+		local flat = MathUtil.flatten(door.CFrame.LookVector)
+		if flat.Magnitude > 1e-4 then
+			return flat.Unit
+		end
+	end
+	return Vector3.new(0, 0, -1)
+end
+
+-- Places an idle customer rig in the doorway (feet at `feet` + facing * DOOR_CUSTOMER_OFFSET,
+-- looking outward) for DOOR_CUSTOMER_TIME seconds. Returns nil without embedded people data.
+function EffectsController.ShowDoorCustomer(destinationId: string, feet: Vector3, facing: Vector3): Model?
+	local figureId = FigureRig.idForKind("Customer", hashString(destinationId))
+	if not FigureRig.has(figureId) then
+		return nil
+	end
+	local folder = ensureFolder()
+	if not folder then
+		return nil
+	end
+	local existing = doorCustomers[destinationId]
+	if existing and existing.Parent then
+		return existing
+	end
+	local ok, model = pcall(function()
+		local rig = FigureRig.build(figureId, { name = EffectsController.DOOR_CUSTOMER_NAME, anchored = true })
+		rig:SetAttribute("DestinationId", destinationId)
+		FigureRig.setIdlePose(rig)
+		FigureRig.place(rig, feet + facing * EffectsController.DOOR_CUSTOMER_OFFSET, facing)
+		rig.Parent = folder
+		return rig
+	end)
+	if not ok then
+		warn("[EffectsController] door customer failed: " .. tostring(model))
+		return nil
+	end
+	doorCustomers[destinationId] = model
+	task.delay(EffectsController.DOOR_CUSTOMER_TIME, function()
+		if doorCustomers[destinationId] == model then
+			doorCustomers[destinationId] = nil
+		end
+		model:Destroy()
+	end)
+	return model
+end
+
+-------------------------------------------------------------------------------
 -- World events
 -------------------------------------------------------------------------------
 
@@ -223,11 +306,15 @@ function EffectsController.DoorReaction(destinationId: string, line: string?)
 	local model = folder and folder:FindFirstChild(destinationId)
 	local door = model and findDoor(model)
 	local position: Vector3? = nil
+	local feet: Vector3? = nil
+	local facing = destinationFacing(destinationId, door)
 	if door then
 		position = door.Position
+		feet = door.Position - Vector3.new(0, door.Size.Y / 2, 0)
 		EffectsController.SwingDoor(door)
 	else
-		position = ctx.state.getDestinationDoorPosition(destinationId)
+		feet = ctx.state.getDestinationDoorPosition(destinationId)
+		position = feet
 		if position then
 			position += Vector3.new(0, 3.5, 0)
 		end
@@ -237,6 +324,9 @@ function EffectsController.DoorReaction(destinationId: string, line: string?)
 	end
 	EffectsController.ShowBubble(position + Vector3.new(0, 4.5, 0), line or "Thank you!", EffectsController.BUBBLE_TIME)
 	EffectsController.Confetti(position + Vector3.new(0, 2, 0), EffectsController.CONFETTI_COUNT)
+	if feet then
+		EffectsController.ShowDoorCustomer(destinationId, feet, facing)
+	end
 end
 
 function EffectsController.PickupReaction(businessId: string, line: string?)

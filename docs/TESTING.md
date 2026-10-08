@@ -8,7 +8,7 @@ Everything runs without Roblox Studio. Three scripts, all honouring `DDC_TOOLS` 
 | `bash tests/run.sh [pattern]` | `python3 tools/bundle.py` → `tests/build/all.luau`, then runs it with `luau`. Exit code is non-zero if any spec fails. `pattern` is a Lua pattern matched against `describe > it` names. |
 | `bash tools/analyze.sh` | `rojo sourcemap` + `luau-lsp analyze` over `src/` with the Roblox API types (`tools/.cache/globalTypes.d.luau`, copied from `DDC_TOOLS` or downloaded). `tests/**` is ignored. |
 | `bash tools/build.sh` | `rojo build` → `build/DeliveryDashCity.rbxl`. |
-| `python3 -I tools/make_codec_fixtures.py` | Regenerates `tests/fixtures/CodecVectors.luau`, the byte-exact test vectors for the pure-Luau codecs (`Util/Base64`, `Util/Inflate`, `Util/PngDecoder`, `MeshData/MeshPack`). Needs numpy + PIL (it imports `tools/mesh_embed.py` for the DDCM packer). Re-run it after `tools/mesh_embed.py` changes the embedded vehicle data: the `embedded` section holds checksums of the real data modules. |
+| `python3 -I tools/make_codec_fixtures.py` | Regenerates `tests/fixtures/CodecVectors.luau`, the byte-exact test vectors for the pure-Luau codecs (`Util/Base64`, `Util/Inflate`, `Util/PngDecoder`, `MeshData/MeshPack`). Needs numpy + PIL (it imports `tools/mesh_embed.py` for the DDCM packer). Re-run it after `tools/mesh_embed.py` changes the embedded data (vehicles, NPC figures, the courier vest): the `embedded` section holds checksums of every real data module, read from the version-2 index files. |
 
 Example: `DDC_TOOLS=/path/to/tools bash tests/run.sh "OrderService"`.
 
@@ -116,14 +116,34 @@ Useful `shim` helpers:
 - `ddcm`: a unit cube OBJ packed with `tools/mesh_embed.pack_geometry` (the production packer),
   parsed back with `struct` (positions, raw i8 normals, raw u16 UVs, 1-based triangles), plus
   bad-magic / bad-version / truncated variants.
-- `embedded`: for every `src/shared/MeshData/<Vehicle>/` module, the byte counts and Adler-32 of
-  the geometry blob, of the texture PNG, of its inflated IDAT stream (the value the zlib trailer
-  carries) and of the RGBA pixels as PIL decodes them. The end-to-end specs decode the real
-  embedded data through `MeshData.loadTexture` → `PngDecoder.decode` and `MeshData.loadGeometry`
-  → `MeshPack.decode`, compare against these, check the progress calls of every stage (per base64
-  chunk, per inflate block, between Adler-32 slices, per unfilter / RGBA row step) and print the decode times (`[codecs] ...` lines;
-  the harness runs modules through `setfenv`, which disables Luau's builtin fastcalls, so these
-  numbers are roughly 3-4x slower than the same code under a plain `luau` run or in Roblox).
+- `embedded`: for every `src/shared/MeshData/<Id>/` module (index version 2: the three vehicle
+  bodies, the eight NPC figures and the courier vest; the generator parses each `init.luau` index
+  with a small Luau table reader), the entry's `kind`, `textured` flag and bbox, when textured the
+  texture's byte count, chunk count, Adler-32, width/height, the Adler-32 of its inflated IDAT
+  stream (the value the zlib trailer carries) and of the RGBA pixels as PIL decodes them, and per
+  part (`parts`, in index order: `Body`, or `Body`/`LegL`/`LegR` for a figure) the blob's byte
+  count, chunk count, Adler-32, vertex/triangle counts, the index bbox in entry coordinates, the
+  bbox stored in the DDCM header (`blobBboxMin/Max`, relative to the hip pivot for a leg) and the
+  `pivot` of a leg. The specs:
+  - `MeshData`: `VERSION == 2`, `list()` is the twelve sorted ids (`MeshPack`, chunk modules and a
+    stale version-1 index are never listed; `has` never throws), `index`/`kind`/`parts`/`part`
+    agree with the fixture (chunk names `<Part>_G<n>`, the vest is untextured and 2.3 x 1.9 x 1.3
+    studs about its origin, figures stand on the ground 5.2 studs tall with the hip pivots on the
+    hip line and `LegL` on -x), the error messages for unknown ids / parts / versions,
+    `loadPart` of every part with one progress call per chunk (byte-identical to the plain decode,
+    Adler-32 verified), `loadGeometry` as the alias of `loadPart(id, "Body")`, `loadTexture` with
+    per-chunk progress for one 1024 px and one 512 px texture and `nil` for `CourierVest`.
+  - `Embedded data end-to-end`, one `it` per entry: the texture (decoded once per entry) through
+    `MeshData.loadTexture` → `PngDecoder.decode` (size 1024 or 512, trailer and RGBA Adler-32,
+    progress calls of every stage: per base64 chunk, per inflate block, between Adler-32 slices,
+    per unfilter / RGBA row step, with thresholds per texture size) and every part blob through
+    `MeshData.loadPart` → `MeshPack.decode` (counts, header bbox byte-exact with the fixture and,
+    shifted by the pivot, equal to the index bbox within 1e-3, positions inside the bbox, triangle
+    indices in range, UVs in [0, 1], unit normals within 0.02; for a leg the centre of the decoded
+    positions is `bboxCentre - pivot` within 1e-3, the top of the leg is at or below the hip and
+    the foot reaches the ground). Decode times are printed (`[codecs] ...` lines; the harness runs
+    modules through `setfenv`, which disables Luau's builtin fastcalls, so these numbers are roughly
+    3-4x slower than the same code under a plain `luau` run or in Roblox).
 
 ## What is mocked faithfully vs. approximated
 

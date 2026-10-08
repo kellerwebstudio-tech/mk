@@ -34,6 +34,14 @@ local function requireClient(relativePath)
 	return require(clientInstance(relativePath))
 end
 
+local function requireShared(path)
+	local node = game:GetService("ReplicatedStorage").Shared
+	for segment in string.gmatch(path, "[^/]+") do
+		node = node[segment]
+	end
+	return require(node)
+end
+
 -- Every `it` starts from a fresh DataModel, so services are looked up lazily through `game`.
 local function svc(name)
 	return game:GetService(name)
@@ -1564,6 +1572,8 @@ end)
 
 describe("CityLifeController", function()
 	it("spawns walkers and idlers after 2 s with non-colliding anchored roots that move", function()
+		-- Generated part figures (the embedded FigureRig path is covered by figures.spec.luau).
+		requireShared("Util/FigureRig")._setMeshData({ has = function() return false end })
 		local ctx = setup({ "CityLifeController" })
 		local CityLife = ctx.controllers.CityLifeController
 		shim.advance(1)

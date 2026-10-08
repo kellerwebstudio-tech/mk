@@ -721,12 +721,21 @@ describe("PackageBuilder", function()
 end)
 
 -------------------------------------------------------------------------------
+-- The NameTag BillboardGui: on the Head of a generated figure, on the Body of an embedded rig.
+local function nameTagOf(model)
+	local host = model:FindFirstChild("Head") or model:FindFirstChild("Body")
+	return host and host:FindFirstChild("NameTag")
+end
+
 describe("NPCBuilder", function()
 	local NPCBuilder
 
 	beforeEach(function()
 		shim.reset()
 		shim.setContext("server")
+		-- These specs describe the generated part figure: hide the embedded people data
+		-- (tests/specs/figures.spec.luau covers the FigureRig path).
+		requireShared("Util/FigureRig")._setMeshData({ has = function() return false end })
 		NPCBuilder = requireBuilder("NPCBuilder")
 	end)
 
@@ -882,7 +891,7 @@ describe("DepotBuilder", function()
 		expect(built.Slot1:FindFirstChild("Van")).toBeTruthy()
 		expect(built.Slot1:FindFirstChild("Driver")).toBeTruthy()
 		expect(built.Slot1.Driver:GetAttribute("NPCKind")).toBe("Driver")
-		expect(built.Slot1.Driver.Head.NameTag.Label.Text).toBe("Ava")
+		expect(nameTagOf(built.Slot1.Driver).Label.Text).toBe("Ava")
 		expect(#built.Decor:GetChildren()).toBeGreaterThan(0)
 		expect(label.Text).toBe("Kai's Depot")
 		expect(plot.signPart.Color).toEqual(Color3.fromRGB(226, 76, 60))
@@ -909,7 +918,7 @@ describe("DepotBuilder", function()
 		DepotBuilder.apply(plot, makeProfile(true, { DepotDecor = "DepotDecor_Lights" }), "Kai")
 		expect(plot.model.Built:FindFirstChild("Slot2")).toBeTruthy()
 		expect(#plot.model.Built.Decor:GetChildren()).toBeGreaterThan(0)
-		expect(plot.model.Built.Slot2.Driver.Head.NameTag.Label.Text).toBe("Benji")
+		expect(nameTagOf(plot.model.Built.Slot2.Driver).Label.Text).toBe("Benji")
 	end)
 
 	it("clear resets the plot to FOR SALE", function()

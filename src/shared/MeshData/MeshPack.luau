@@ -1,4 +1,5 @@
 --!strict
+--!native
 -- MeshPack: decodes the "DDCM" v1 geometry blob written by tools/mesh_embed.py.
 --
 -- Layout (little-endian):

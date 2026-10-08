@@ -2,8 +2,11 @@
 -- CityLifeController: client-only cosmetic NPCs. Up to 20 pedestrians walk the layout's
 -- pedestrianPaths loops at 6-8 studs/s with a Motor6D walk pose, plus idle customers near four
 -- destinations and workers at depot plots. Figures are built locally (server Builders are not
--- reachable from the client); every part is non-colliding, the anchored Root is moved by CFrame.
--- Updated at 20 Hz; figures farther than 350 studs from the camera are paused and hidden.
+-- reachable from the client): with embedded people data a Shared.Util.FigureRig placeholder rig
+-- (FigureRig.idForKind per kind/seed; the EmbeddedMeshController dresses the placeholders and the
+-- hip Motor6Ds swing through FigureRig.setWalkPose), otherwise the generated part figure below.
+-- Every part is non-colliding, the anchored Root is moved by CFrame. Updated at 20 Hz; figures
+-- farther than 350 studs from the camera are paused and hidden.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
@@ -12,6 +15,7 @@ local Workspace = game:GetService("Workspace")
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Util = Shared:WaitForChild("Util")
 local MathUtil = require(Util:WaitForChild("MathUtil"))
+local FigureRig = require(Util:WaitForChild("FigureRig"))
 
 local CityLifeController = {}
 
@@ -81,15 +85,36 @@ end
 export type Figure = {
 	model: Model,
 	root: BasePart,
-	leftLeg: Motor6D,
-	rightLeg: Motor6D,
-	leftArm: Motor6D,
-	rightArm: Motor6D,
+	rig: boolean,
+	figureId: string?,
+	leftLeg: Motor6D?,
+	rightLeg: Motor6D?,
+	leftArm: Motor6D?,
+	rightArm: Motor6D?,
 }
+
+-- Builds the figure for a kind/seed: an embedded FigureRig when its data is present (Root
+-- anchored, placeholders unanchored and dressed by the EmbeddedMeshController), else the generated
+-- part figure (BuildGeneratedFigure).
+function CityLifeController.BuildFigure(seed: number, kind: string?): Figure
+	local npcKind = kind or "Pedestrian"
+	local figureId = FigureRig.idForKind(npcKind, seed)
+	if FigureRig.has(figureId) then
+		local ok, model = pcall(FigureRig.build, figureId, { name = npcKind, anchored = true })
+		if ok and model and model.PrimaryPart then
+			model:SetAttribute("NPCKind", npcKind)
+			model:SetAttribute("Seed", seed)
+			FigureRig.setIdlePose(model)
+			return { model = model, root = model.PrimaryPart, rig = true, figureId = figureId }
+		end
+		warn("[CityLifeController] " .. figureId .. ": rig build failed, using the generated figure: " .. tostring(model))
+	end
+	return CityLifeController.BuildGeneratedFigure(seed, npcKind)
+end
 
 -- Builds a simple part figure. Root is anchored and invisible; limbs hang off the torso with
 -- Motor6Ds whose Transform animates the pose. Colours vary with `seed`.
-function CityLifeController.BuildFigure(seed: number, kind: string?): Figure
+function CityLifeController.BuildGeneratedFigure(seed: number, kind: string?): Figure
 	local model = Instance.new("Model")
 	model.Name = kind or "Pedestrian"
 
@@ -133,6 +158,8 @@ function CityLifeController.BuildFigure(seed: number, kind: string?): Figure
 	return {
 		model = model,
 		root = root,
+		rig = false,
+		figureId = nil,
 		leftLeg = leftLegMotor,
 		rightLeg = rightLegMotor,
 		leftArm = leftArmMotor,
@@ -140,21 +167,35 @@ function CityLifeController.BuildFigure(seed: number, kind: string?): Figure
 	}
 end
 
--- Walk pose: legs and arms swing in opposite phase.
+-- Walk pose: legs and arms swing in opposite phase (rigs: the hip Motor6Ds through FigureRig).
 local function applyWalkPose(figure: Figure, phase: number)
+	if figure.rig then
+		FigureRig.setWalkPose(figure.model, phase)
+		return
+	end
 	local swing = math.sin(phase) * 0.6
-	figure.leftLeg.Transform = CFrame.Angles(swing, 0, 0)
-	figure.rightLeg.Transform = CFrame.Angles(-swing, 0, 0)
-	figure.leftArm.Transform = CFrame.Angles(-swing * 0.8, 0, 0)
-	figure.rightArm.Transform = CFrame.Angles(swing * 0.8, 0, 0)
+	local leftLeg, rightLeg, leftArm, rightArm = figure.leftLeg, figure.rightLeg, figure.leftArm, figure.rightArm
+	if leftLeg and rightLeg and leftArm and rightArm then
+		leftLeg.Transform = CFrame.Angles(swing, 0, 0)
+		rightLeg.Transform = CFrame.Angles(-swing, 0, 0)
+		leftArm.Transform = CFrame.Angles(-swing * 0.8, 0, 0)
+		rightArm.Transform = CFrame.Angles(swing * 0.8, 0, 0)
+	end
 end
 
 local function applyIdlePose(figure: Figure, time: number, seed: number)
+	if figure.rig then
+		-- Rigs have no arm joints; the idle pose was set once at build time.
+		return
+	end
 	local sway = math.sin(time * 1.2 + seed) * 0.08
-	figure.leftArm.Transform = CFrame.Angles(0, 0, sway)
-	figure.rightArm.Transform = CFrame.Angles(0, 0, -sway)
-	figure.leftLeg.Transform = CFrame.identity
-	figure.rightLeg.Transform = CFrame.identity
+	local leftLeg, rightLeg, leftArm, rightArm = figure.leftLeg, figure.rightLeg, figure.leftArm, figure.rightArm
+	if leftLeg and rightLeg and leftArm and rightArm then
+		leftArm.Transform = CFrame.Angles(0, 0, sway)
+		rightArm.Transform = CFrame.Angles(0, 0, -sway)
+		leftLeg.Transform = CFrame.identity
+		rightLeg.Transform = CFrame.identity
+	end
 end
 
 -------------------------------------------------------------------------------

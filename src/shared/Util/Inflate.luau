@@ -1,4 +1,5 @@
 --!strict
+--!native
 -- Inflate: pure-Luau DEFLATE (RFC 1951) and zlib (RFC 1950) decompression over buffers.
 --
 --   Inflate.zlibDecompress(data, options?) -> (buffer, adler32)

@@ -1,14 +1,16 @@
 --!nonstrict
 -- Embedded vehicle meshes (no upload): MeshAssets.isEmbedded / usesCustomMesh, the VehicleBuilder
--- placeholder path (invisible Part "MeshBody" tagged "EmbeddedMeshBody"), display publishing,
--- the client EmbeddedMeshController (EditableMesh / EditableImage build, placeholder dressing,
--- failure fallback), the CosmeticsController preview and the harness EditableMesh/EditableImage.
+-- placeholder path (invisible Part "MeshBody" tagged "EmbeddedMeshBody", attributes VehicleId +
+-- EmbeddedMesh/EmbeddedPart), display publishing, the client EmbeddedMeshController on one-part
+-- vehicle entries (EditableMesh / EditableImage build, placeholder dressing, failure fallback,
+-- priority order), the CosmeticsController preview and the harness EditableMesh/EditableImage.
+-- Multi-part figures, the untextured vest and the FigureRig dressing: tests/specs/figures.spec.luau.
 --
 -- The decoders (Base64 / Inflate / PngDecoder / MeshPack / MeshData) have their own specs; here
--- they are stubbed through MeshAssets._setMeshData and EmbeddedMeshController._setDecoders with
--- tiny inputs: a 2x2 RGBA PNG (generated once with PIL, pasted as base64) and a one-triangle DDCM
--- blob built with string.pack. When the real decoder modules are present, one test also runs the
--- two vectors through them.
+-- they are stubbed through MeshAssets._setMeshData and EmbeddedMeshController._setDecoders
+-- (version-2 shape: index + loadPart) with tiny inputs: a 2x2 RGBA PNG (generated once with PIL,
+-- pasted as base64) and a one-triangle DDCM blob built with string.pack. When the real decoder
+-- modules are present, one test also runs the two vectors through them.
 
 local function requireShared(path)
 	return shim.requirePath("ReplicatedStorage/Shared/" .. path)
@@ -135,7 +137,20 @@ local function b64decode(s)
 	return buffer.fromstring(table.concat(out))
 end
 
--- MeshData stand-in (has/list/index/loadGeometry/loadTexture) for the given ids.
+-- A version-2 index for a one-part textured vehicle entry.
+local function vehicleIndex(id)
+	return {
+		id = id,
+		version = 2,
+		kind = "vehicle",
+		texture = { chunks = 1, bytes = 0, width = 2, height = 2, format = "png" },
+		bboxMin = { -1, 0, 0 },
+		bboxMax = { 1, 2, 0 },
+		parts = { { name = "Body", chunks = { "Body_G1" }, bytes = 0, vertexCount = 3, triangleCount = 1, bboxMin = { -1, 0, 0 }, bboxMax = { 1, 2, 0 } } },
+	}
+end
+
+-- MeshData stand-in (has/list/index/kind/loadPart/loadGeometry/loadTexture) for the given ids.
 local function meshDataStub(ids)
 	local set = {}
 	for _, id in ipairs(ids) do
@@ -149,7 +164,13 @@ local function meshDataStub(ids)
 			return set[id] == true
 		end,
 		index = function(id)
-			return { vehicleId = id, version = 1, geometry = { chunks = 1 }, texture = { chunks = 1, width = 2, height = 2 } }
+			return vehicleIndex(id)
+		end,
+		kind = function()
+			return "vehicle"
+		end,
+		loadPart = function()
+			return ddcmBlob()
 		end,
 		loadGeometry = function()
 			return ddcmBlob()
@@ -167,6 +188,9 @@ local function decoderStub(ids, opts)
 		calls = { loadGeometry = 0, loadTexture = 0, decodePng = 0, decodeMesh = 0, loaderProgress = 0 },
 		progressCalls = 0,
 	}
+	stub.index = function(id)
+		return vehicleIndex(id)
+	end
 	-- The loaders receive the controller's yielder as options.onProgress (MeshData fires it per
 	-- decoded base64 chunk); count the loaders that got one and invoke it like MeshData would.
 	local function loaderProgress(options, bytes)
@@ -178,7 +202,8 @@ local function decoderStub(ids, opts)
 	stub.list = function()
 		return table.clone(ids)
 	end
-	stub.loadGeometry = function(id, options)
+	stub.loadPart = function(id, partName, options)
+		expect(partName).toBe("Body")
 		stub.calls.loadGeometry += 1
 		if opts.delay then
 			task.wait(opts.delay)
@@ -303,6 +328,8 @@ describe("VehicleBuilder embedded placeholder", function()
 			expect(body.Anchored).toBe(false)
 			expect(body.CollisionGroup).toBe("Vehicles")
 			expect(body:GetAttribute("VehicleId")).toBe(id)
+			expect(body:GetAttribute("EmbeddedMesh")).toBe(id)
+			expect(body:GetAttribute("EmbeddedPart")).toBe("Body")
 			expect(body:GetAttribute("PaintSlot")).toBeNil()
 			expect(CollectionService:HasTag(body, TAG)).toBe(true)
 			local weld = body:FindFirstChildWhichIsA("WeldConstraint")
@@ -337,6 +364,7 @@ describe("VehicleBuilder embedded placeholder", function()
 		expect(body.Anchored).toBe(true)
 		expect(body.Transparency).toBe(1)
 		expect(body:GetAttribute("VehicleId")).toBe("Van")
+		expect(body:GetAttribute("EmbeddedMesh")).toBe("Van")
 		expect(CollectionService:HasTag(body, TAG)).toBe(true)
 		expect(body:FindFirstChildWhichIsA("WeldConstraint")).toBeNil()
 		expect(#display.Wheels:GetChildren()).toBe(0)
@@ -434,6 +462,7 @@ describe("VehicleService with embedded vehicles", function()
 			expect(body.ClassName).toBe("Part")
 			expect(body.Anchored).toBe(true)
 			expect(body:GetAttribute("VehicleId")).toBe(id)
+			expect(body:GetAttribute("EmbeddedMesh")).toBe(id)
 			expect(CollectionService:HasTag(body, TAG)).toBe(true)
 			expect(CollectionService:GetTagged(TAG)).toContain(body)
 		end
@@ -494,6 +523,7 @@ describe("EmbeddedMeshController", function()
 			table.insert(loaded, id)
 		end)
 		expect(Controller.ListVehicles()).toEqual({ "Van", "Bicycle" })
+		expect(Controller.DecodeOrder({ "Van", "Bicycle" })).toEqual({ "Bicycle", "Van" })
 		Controller.Start()
 		shim.advance(0.2)
 		table.sort(loaded)
@@ -510,6 +540,9 @@ describe("EmbeddedMeshController", function()
 
 		local part = Controller.GetMeshPart("Van")
 		expect(part:IsA("MeshPart")).toBe(true)
+		expect(Controller.GetMeshPart("Van", "Body")).toBe(part)
+		expect(Controller.GetMeshPart("Van", "LegL")).toBeNil()
+		expect(Controller.ListParts("Van")).toEqual({ "Body" })
 		expect(part.Name).toBe("EmbeddedMesh")
 		expect(part.Parent).toBeNil()
 		expect(part.Size).toBeCloseTo(vecOf(VehicleDefinitions.get("Van").mesh.body.size), 1e-6)
@@ -560,6 +593,7 @@ describe("EmbeddedMeshController", function()
 		expect(stats.geometrySeconds).toBeGreaterThanOrEqual(0)
 		expect(stats.textureSeconds).toBeGreaterThanOrEqual(0)
 		expect(stats.buildSeconds).toBeGreaterThanOrEqual(0)
+		expect(stats.parts).toBe(1)
 		expect(callsOf("CreateMeshPartAsync")).toBe(2)
 		expect(callsOf("CreateEditableMesh")).toBe(2)
 		expect(callsOf("CreateEditableImage")).toBe(2)
@@ -649,20 +683,21 @@ describe("EmbeddedMeshController", function()
 		expect(#shim.warnings).toBe(0)
 	end)
 
-	it("decodes the vehicles one after another so one frame never carries several decode budgets", function()
+	it("decodes the entries one after another in priority order so one frame never carries several decode budgets", function()
 		local stub = clientSetup({ "Van", "Bicycle" }, { delay = 1 })
 		Controller.Start()
 		shim.advance(0.5)
-		-- only the first vehicle's loader has started; the second waits for it to finish
+		-- only the first entry's loader has started; the second waits for it to finish. The
+		-- Bicycle comes before the Van in EmbeddedMeshController.PRIORITY whatever the list order.
 		expect(stub.calls.loadGeometry).toBe(1)
 		expect(Controller.IsReady("Van")).toBe(false)
 		expect(Controller.IsReady("Bicycle")).toBe(false)
 		shim.advance(1)
-		expect(Controller.IsReady("Van")).toBe(true)
-		expect(Controller.IsReady("Bicycle")).toBe(false)
+		expect(Controller.IsReady("Bicycle")).toBe(true)
+		expect(Controller.IsReady("Van")).toBe(false)
 		expect(stub.calls.loadGeometry).toBe(2)
 		shim.advance(1)
-		expect(Controller.IsReady("Bicycle")).toBe(true)
+		expect(Controller.IsReady("Van")).toBe(true)
 		expect(callsOf("CreateMeshPartAsync")).toBe(2)
 		expect(#shim.warnings).toBe(0)
 	end)

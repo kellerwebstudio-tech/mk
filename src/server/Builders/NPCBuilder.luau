@@ -1,9 +1,18 @@
 --!strict
--- NPCBuilder: simple part-based figures (no Humanoid) used for business staff, depot drivers,
--- and client-side pedestrians/customers. Every limb is joined to the Root through a Motor6D so
--- NPCBuilder.setWalkPose can animate it by writing Motor6D.Transform.
+-- NPCBuilder: NPC figures (no Humanoid) used for business staff, depot drivers and workers.
 --
--- Model layout:
+-- Embedded figures (the active mode): when Shared.MeshData holds the people mesh for the kind
+-- (FigureRig.has(FigureRig.idForKind(kind, seed))), build returns a Shared.Util.FigureRig
+-- placeholder rig (Root + Body/LegL/LegR placeholders dressed by the client EmbeddedMeshController,
+-- hip Motor6Ds "LeftHip"/"RightHip"), with the model attributes NPCKind/Seed/FigureId, the tag
+-- "CityNPC" and the optional "NameTag" BillboardGui on the Body. setWalkPose/setIdlePose delegate
+-- to FigureRig for rigs (model attribute FigureId); place and freeze work for both layouts.
+--
+-- Generated figures (fallback without embedded data): simple part-based figures. Every limb is
+-- joined to the Root through a Motor6D so NPCBuilder.setWalkPose can animate it by writing
+-- Motor6D.Transform.
+--
+-- Generated model layout:
 --   Model "<Kind>" (PrimaryPart Root, attribute NPCKind, tag "CityNPC")
 --     Root   (invisible 2x2x1 Part at the torso centre; the caller anchors it for static NPCs)
 --     Torso, Head, LeftArm, RightArm, LeftLeg, RightLeg (Motor6D "TorsoJoint", "Neck",
@@ -14,6 +23,10 @@
 
 local CollectionService = game:GetService("CollectionService")
 local PhysicsService = game:GetService("PhysicsService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Shared = ReplicatedStorage:WaitForChild("Shared")
+local FigureRig = require(Shared:WaitForChild("Util"):WaitForChild("FigureRig"))
 
 local NPCBuilder = {}
 
@@ -138,11 +151,11 @@ local function outfitFor(kind: string, rng: Random, options: NPCOptions?): Outfi
 	}
 end
 
-local function addNameTag(head: BasePart, name: string)
+local function addNameTag(head: BasePart, name: string, offsetY: number?)
 	local gui = Instance.new("BillboardGui")
 	gui.Name = "NameTag"
 	gui.Size = UDim2.new(0, 160, 0, 36)
-	gui.StudsOffset = Vector3.new(0, 1.4, 0)
+	gui.StudsOffset = Vector3.new(0, offsetY or 1.4, 0)
 	gui.MaxDistance = 80
 	gui.LightInfluence = 0
 	gui.AlwaysOnTop = false
@@ -159,16 +172,54 @@ local function addNameTag(head: BasePart, name: string)
 	label.Parent = gui
 end
 
+-- True when the model is a FigureRig placeholder rig (embedded people mesh).
+function NPCBuilder.isRig(model: Model): boolean
+	return type(model:GetAttribute("FigureId")) == "string"
+end
+
+-- The embedded figure id NPCBuilder.build would use for the kind/seed, or nil without data.
+function NPCBuilder.figureIdFor(kind: string, seed: number?): string?
+	local id = FigureRig.idForKind(kind, seed or 0)
+	if FigureRig.has(id) then
+		return id
+	end
+	return nil
+end
+
+-- Embedded people mesh: placeholder rig built by FigureRig (unanchored; place/freeze anchor it).
+local function buildRig(figureId: string, kind: string, seed: number?, options: NPCOptions?): Model
+	local model = FigureRig.build(figureId, { name = kind, anchored = false, collisionGroup = NPCBuilder.COLLISION_GROUP })
+	model.Name = kind
+	model:SetAttribute("NPCKind", kind)
+	model:SetAttribute("Seed", seed or 0)
+	if options and options.name and options.name ~= "" then
+		local body = model:FindFirstChild("Body")
+		if body and body:IsA("BasePart") then
+			-- Just above the figure's head: the body's top edge plus the generated figure's clearance.
+			local top = body.Position.Y + body.Size.Y / 2
+			addNameTag(body, options.name, top - body.Position.Y + 0.8)
+		end
+	end
+	CollectionService:AddTag(model, NPCBuilder.TAG)
+	return model
+end
+
 --[[
 	Builds an NPC figure.
 	kind: "Pedestrian" | "Staff" | "Customer" | "Worker" | "Driver"
 	seed: deterministic appearance seed (nil = 0)
-	options: { name?, shirt = {r,g,b}?, pants = {r,g,b}? } — Staff aprons use options.shirt as the accent.
+	options: { name?, shirt = {r,g,b}?, pants = {r,g,b}? } — Staff aprons use options.shirt as the accent
+	  (generated figures only; embedded figures are textured).
 	The returned model has no Parent; the caller pivots it (Root is the PrimaryPart) and anchors
-	Root when the figure is static.
+	Root when the figure is static. With embedded people data the model is a FigureRig rig
+	(attribute FigureId); otherwise the generated part figure below.
 ]]
 function NPCBuilder.build(kind: string, seed: number?, options: NPCOptions?): Model
 	ensureCollisionGroup(NPCBuilder.COLLISION_GROUP)
+	local figureId = NPCBuilder.figureIdFor(kind, seed)
+	if figureId then
+		return buildRig(figureId, kind, seed, options)
+	end
 	local rng = Random.new(seed or 0)
 	local outfit = outfitFor(kind, rng, options)
 
@@ -241,6 +292,10 @@ end
 
 -- Swings arms and legs from sin(phase). phase advances with walking distance (radians).
 function NPCBuilder.setWalkPose(model: Model, phase: number)
+	if NPCBuilder.isRig(model) then
+		FigureRig.setWalkPose(model, phase)
+		return
+	end
 	local swing = math.sin(phase) * 0.7
 	local function setMotor(limbName: string, motorName: string, angle: number)
 		local limb = model:FindFirstChild(limbName)
@@ -259,6 +314,10 @@ end
 
 -- Resets the pose to standing.
 function NPCBuilder.setIdlePose(model: Model)
+	if NPCBuilder.isRig(model) then
+		FigureRig.setIdlePose(model)
+		return
+	end
 	NPCBuilder.setWalkPose(model, 0)
 end
 
@@ -269,8 +328,12 @@ function NPCBuilder.place(model: Model, position: Vector3, facing: Vector3?, anc
 	if look.Magnitude < 1e-3 then
 		look = Vector3.new(0, 0, -1)
 	end
-	local origin = position + Vector3.new(0, NPCBuilder.ROOT_HEIGHT, 0)
-	model:PivotTo(CFrame.lookAt(origin, origin + look.Unit))
+	if NPCBuilder.isRig(model) then
+		FigureRig.place(model, position, look)
+	else
+		local origin = position + Vector3.new(0, NPCBuilder.ROOT_HEIGHT, 0)
+		model:PivotTo(CFrame.lookAt(origin, origin + look.Unit))
+	end
 	local root = model.PrimaryPart
 	if root and anchored ~= false then
 		root.Anchored = true

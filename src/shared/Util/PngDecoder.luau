@@ -1,4 +1,5 @@
 --!strict
+--!native
 -- PngDecoder: pure-Luau PNG decoding to RGBA8 (for EditableImage:WritePixelsBuffer).
 --
 --   PngDecoder.decode(png: buffer, options?) -> { width, height, rgba: buffer, colorType, adler32 }
